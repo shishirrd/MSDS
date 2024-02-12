@@ -1,0 +1,1 @@
+This subject contained no coding components and was solely focused on advising a fictional company on its digital transformation. Our group selected financial technology as the industry and developed a transformation strategy by selecting use cases and evaluated the same on ease of implemnentation, governance requirements and success measurement.
