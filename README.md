@@ -2,10 +2,6 @@
 
 Welcome to the repository for my Master of Science in Data Science (MSDS) program. This repository contains my project work, assignments, and rough work undertaken during the course.
 
-## Table of Contents
-- [MSDS400](#MSDS400) - Math for Modelers
-- [MSDS420](#MSDS420) - Database Systems
-
 ## MSDS 400-DL Math for Modelers
 Students learn how to build and interpret mathematical models of real-world phenomena in many areas. The course covers linear algebra, discrete mathematics, calculus and graph theory, with an emphasis on applications in data science and data engineering. It provides an introduction to these fields of mathematics prior to enrolling in courses that assume understanding of mathematical concepts.  
 
