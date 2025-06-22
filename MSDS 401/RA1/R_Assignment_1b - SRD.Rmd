@@ -1,0 +1,325 @@
+---
+title: 'Deshpande_Shishir'
+output:
+  html_document: default
+---
+
+```{r setup, include = FALSE}
+# DO NOT ADD OR REVISE CODE HERE
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE)
+
+```
+
+### Instructions
+
+R markdown is a plain-text file format for integrating text and R code, and creating transparent, reproducible and interactive reports. An R markdown file (.Rmd) contains metadata, markdown and R code "chunks", and can be "knit" into numerous output types. Answer the test questions by adding R code to the fenced code areas below each item. Once completed, you will "knit" and submit the resulting .html file, as well the .Rmd file. The .html will include your R code *and* the output.
+
+**Before proceeding, look to the top of the .Rmd for the (YAML) metadata block, where the *title* and *output* are given. Please change *title* from 'Programming with R Assignment #1' to your name, with the format 'lastName_firstName.'**
+
+### Test Items starts from here - There are 5 sections - 50 points total ##########################
+
+Read each question carefully and address each element.  Do not output contents of vectors or data frames unless requested.
+
+##### Section 1: (8 points) This problem deals with vector manipulations.
+
+(1)(a)  Create a vector that contains the following:
+* The integer sequence 1 to 5, inclusive,
+* The square root of 2,
+* The product of 17 and 14, and
+* Three (3) repetitions of the vector c(2.5, 5, 7.5).
+
+Assign the vector to the name q1_vector and output. You will use q1_vector for the following four (4) questions.
+
+```{r test1a}
+# Creating vector
+q1_vector <- c(1:5, sqrt(2), 17 * 14, rep(c(2.5, 5, 7.5), times = 3)) 
+
+# Printing output
+print("New Vector")
+print(q1_vector)
+
+```
+
+(1)(b)  Remove all elements of q1_vector greater than 7. Assign this new vector, with only values equal to or less than 7, to the name q1_vector_7. What is the length of q1_vector_7?
+
+```{r test1b}
+# New vector with elements less than or equal to 7
+q1_vector_7 <- q1_vector[q1_vector <=7]
+
+# Print length of new vector, q1_vector_7
+print("Length of vector with elements less than or equal to 7")
+print(length(q1_vector_7))
+```
+
+(1)(c) Sort q1_vector in ascending order and assign the sorted vector to the name q1_vector_sorted. What is the sum of the 5th through 10th elements of q1_vector_sorted, inclusive?
+
+```{r test1c}
+# Sorted vector
+q1_vector_sorted <- sort(q1_vector)
+
+# Finding sum of 5th through 10th element
+sum5to10 <- sum(q1_vector_sorted[5:10])
+
+# Printing the output
+print("Sum of 5th through 10th elements")
+print(sum5to10)
+
+```
+
+(1)(d) Square each element of q1_vector and assign the new, squared value vector to the name q1_vector_sqrd. How many elements of q1_vector_sqrd are greater than 25?
+
+```{r test1d}
+# Squaring vector elements
+q1_vector_sqrd <- q1_vector^2
+
+# Finding elements greater than 25
+elements_greater_than_25 <- sum(q1_vector_sqrd > 25)
+
+#Printing the output
+print("Squared Vector")
+print(q1_vector_sqrd)
+
+print("No. of elements in Squared Vector greater than 25")
+print(elements_greater_than_25)
+
+```
+
+(1)(e) Remove the first and last elements of q1_vector. Assign the two (2) removed elements to the name q1_vector_short. What is the product of the elements of q1_vector_short?
+
+```{r test1e}
+# Shortening the vector
+q1_vector_short <- q1_vector[-c(1, length(q1_vector))]
+
+# Finding product of shortened vector elements
+product_q1_vector_short <- prod(q1_vector_short)
+
+#Printing the output
+print("No. of elements in shortened vector")
+print(q1_vector_short)
+print("Product of elements in shortened vector")
+print(product_q1_vector_short)
+```
+
+-----
+
+##### Section 2: (10 points) The expression y = sin(x/2) - cos(x/2) is a trigonometric function.
+
+(2)(a) Create a user-defined function - via *function()* - that implements the trigonometric function above, accepts numeric values, "x," calculates and returns values "y."
+
+```{r test2a}
+y_function <- function(x) {
+  y <- sin(x/2) - cos(x/2) 
+  return(y)
+}
+
+#Testing the function
+x_example <- 90
+y_example <- y_function(x_example)
+
+# Printing output
+print("When x = 90, y = sin(x/2) - cos(x/2) will be:")
+print(y_example)
+
+
+```
+
+(2)(b) Create a vector, x, of 4001 equally-spaced values from -2 to 2, inclusive. Compute values for y using the vector x and your function from (2)(a).  **Do not output x or y.**  Find the value in the vector x that corresponds to the minimum value in the vector y. Restrict attention to only the values of x and y you have computed; i.e. do not interpolate. Round to 3 decimal places and output both the minimum y and corresponding x value.
+
+Finding the two desired values can be accomplished in as few as two lines of code. Do not use packages or programs you may find on the internet or elsewhere. Do not output the other elements of the vectors x and y. Relevant coding methods are given in the *Quick Start Guide for R*.
+
+```{r test2b}
+# Defining vectors
+x <- seq(-2, 2, length.out = 4001)
+
+# Setting function to x and finding minimum
+y <- y_function(x)
+min_y <-which.min(y)
+
+# Printing output
+print("Minimum value in vector y")
+print(round(y[min_y], 3))
+print("Corresponding x value")
+print(round(x[min_y], 3))
+```
+
+(2)(c) Plot y versus x in color, with x on the horizontal axis. Show the location of the minimum value of y determined in 2(b).  Show the values of x and y corresponding to the minimum value of y in the display. Add a title and other features such as text annotations. Text annotations may be added via *text()* for base R plots and *geom_text()* or *geom_label()* for ggplots.
+
+```{r test2c}
+# Plotting x and y
+plot(x, y, type = "l", col = "blue", lwd = 2, 
+  main = "Plot of y = sin(x/2) - cos(x/2)", 
+  xlab = "x", ylab = "y")
+
+# Defining the points
+points(round(x[min_y], 3), round(y[min_y], 3), col = "red", pch = 19, cex = 1.5)
+
+# Adding title text
+text(round(x[min_y], 3), round(y[min_y], 3), labels = paste0("(", round(x[min_y], 3), ", ", round(y[min_y], 3), ")"), 
+  pos = 3, col = "red")
+```
+
+-----
+
+##### Section 3: (8 points) This problem requires finding the point of intersection of two functions.  Using the function ```y = cos(x / 2) * sin(x / 2)```, find where the curved line y = -(x/2)^3 intersects it within the range of values used in part (2) (i.e. 4001 equally-spaced values from -2 to 2).  Plot both functions on the same display, and show the point of intersection.  Present the coordinates of this point as text in the display.    
+
+```{r test3}
+# Defining functions
+function_1 <- function(x) cos(x/2) * sin(x/2)
+function_2 <- function(x) -(x/2)^3
+
+# Testing for x
+y1 <- function_1(x)
+y2 <- function_2(x)
+
+# Finding the intersection
+intersection_index <- which.min(abs(y1 - y2))
+
+# Plotting x, y1 & y2
+plot(x, y1, type = "l", col = "blue", xlab = "x", ylab = "y", main = "Plot of y vs x for both functions")
+lines(x, y2, col = "red")
+
+# Pointing the intersection
+points(x[intersection_index], y1[intersection_index], pch = 16, col = "green")
+
+# Adding text to describe intersection
+text(x[intersection_index] + 0.1, y1[intersection_index], labels = paste("Intersection:", round(x[intersection_index], 3), ",", round(y1[intersection_index], 3)), pos = 4)
+
+```
+
+-----
+
+##### Section 4: (12 points) Use the "trees" dataset for the following items. This dataset has three variables (Girth, Height, Volume) on 31 felled black cherry trees.
+
+(4)(a) Use *data(trees)* to load the dataset. Check and output the structure with *str()*. Use *apply()* to return the mean values for the three variables. Output these values.  Using R and logicals, determine the number of trees with Volume greater than the mean Volume; effectively, how many rows have Volume greater than the mean Volume.   
+
+```{r test3a}
+# Loading and exploring trees
+data(trees)
+str(trees)
+
+# Finding mean of the data and trees with greater than mean volume
+mean_trees <- apply(trees, 2, mean)
+greater_than_mean_trees <- sum(trees$Volume > mean_trees["Volume"])
+
+#Printing the output
+print(mean_trees)
+print(greater_than_mean_trees)
+```
+
+(4)(b) Girth is defined as the diameter of a tree taken at 4 feet 6 inches from the ground. Convert each diameter to a radius, r. Calculate the cross-sectional area of each tree using pi times the squared radius. What is the interquartile range (IQR) of areas?
+
+```{r test3b}
+# Finding the radius
+radius <- trees$Girth / 2 
+areas <- pi * radius^2
+
+#Printing the output
+print(IQR(areas))
+
+```
+
+(4)(c) Create a histogram of the areas calculated in (b). Title and label the axis.
+
+```{r test3c}
+# Plotting 4b
+hist(areas, main = "Histogram of Girth Areas",
+     xlab = "Cross-sectional Area (inches)", ylab = "Frequency",
+     col = "orange", border = "black")
+
+
+```
+
+(4)(d) Identify the tree with the largest area and output on one line its row number and three measurements.
+
+```{r test3d}
+# Calculating max area
+largest_area_tree <- which.max(areas)
+
+# Finding the tree with the max area
+largest_tree <- trees[largest_area_tree, ]
+
+# Outputting the answer row
+cat("Row:", largest_area_tree, "Girth:", largest_tree$Girth, "Height:", largest_tree$Height, 
+    "Volume:", largest_tree$Volume, "\n")
+
+```
+
+-----
+
+##### Section 5: (12 points) The Student's t distribution is an example of a symmetric, bell-shaped distribution but with 'heavier' tails than a normal distribution.  This problem involves comparing the two.  
+
+5(a) Use *set.seed(9999)* and *rt()* with n = 100, df = 10 to generate a random sample designated as y.  Generate a second random sample designated as x with *set.seed(123)* and *rnorm()* using n = 100, mean = 0 and sd = 1.25.  
+
+Generate a new object using *cbind(x, y)*. Do not output this object; instead, assign it to a new name. Pass this object to *apply()* and compute the inter-quartile range (IQR) for each column:  x and y. Use the function *IQR()* for this purpose. Round the results to four decimal places and present (this exercise shows the similarity of the IQR values.).
+
+For information about *rt()*, use *help(rt)* or *?rt()*.  **Do not output x or y.**
+
+```{r test5a}
+# 1st sample
+set.seed(9999)
+y <- rt(100, df = 10)
+
+# 2nd sample
+set.seed(123)
+x <- rnorm(100, mean = 0, sd = 1.25)
+
+# Combining samples
+combined_sample = cbind(x, y)
+sample_IQR <- round(apply(combined_sample, 2, IQR), 4)
+
+# Printing the IQR
+print("IQR for combined samples")
+print(sample_IQR)
+```
+
+(5)(b) This item will illustrate the difference between a normal and heavy-tailed distribution.  For base R plots, use *par(mfrow = c(2, 2))* to generate a display with four diagrams; *grid.arrange()* for ggplots. On the first row, for the normal results, present a histogram and a horizontal boxplot for x in color.  For the t results, present a histogram and a horizontal boxplot for y in color.
+
+```{r test5b}
+# Context
+par(mfrow = c(2, 2))
+
+# Plotting the histogram and horizontal boxplot in color
+hist(x, main = "Histogram of x (Normal)", col = "lightblue", 
+  xlab = "x", border = "black")
+
+# Boxplot for x
+boxplot(x, horizontal = TRUE, col = "orange", 
+  main = "Boxplot of x (Normal)", xlab = "x")
+
+# Histogram for y
+hist(y, main = "Histogram of y (t-distribution)", col = "pink", 
+  xlab = "y", border = "black")
+
+# Boxplot for y
+boxplot(y, horizontal = TRUE, col = "lightgreen", 
+  main = "Boxplot of y (t-distribution)", xlab = "y")
+
+
+
+
+```
+
+(5)(c) QQ plots are useful for detecting the presence of heavy-tailed distributions. Present side-by-side QQ plots, one for each sample, using *qqnorm()* and *qqline()*.  Add color and titles. In base R plots, "cex" can be used to control the size of the plotted data points and text; "size" for ggplot2 figures. Lastly, determine if there are any extreme outliers in either sample.Remember extreme outliers are based on 3 multiplied by the IQR in the box plot. R uses a default value of 1.5 times the IQR to define outliers (not extreme) in both boxplot and boxplot stats.
+```{r test5c}
+# Plotting side by side
+par(mfrow = c(1, 2))
+# QQ plot for x
+qqnorm(x, main = "QQ Plot of x (Normal)", col = "blue", pch = 19, cex = 0.7)
+qqline(x, col = "red", lwd = 2)
+
+# QQ plot for y
+qqnorm(y, main = "QQ Plot of y (t-distribution)", col = "darkgreen", pch = 19, cex = 0.7)
+qqline(y, col = "red", lwd = 2)
+
+# Determine extreme outliers
+x_iqr <- IQR(x)
+y_iqr <- IQR(y)
+
+x_extreme_outliers <- sum(x < (quantile(x, 0.25) - 3 * x_iqr) | x > (quantile(x, 0.75) + 3 * x_iqr))
+y_extreme_outliers <- sum(y < (quantile(y, 0.25) - 3 * y_iqr) | y > (quantile(y, 0.75) + 3 * y_iqr))
+
+# Printing outlier data
+cat("Extreme outliers in x:", x_extreme_outliers, "\n")
+cat("Extreme outliers in y:", y_extreme_outliers, "\n")
+
+```
