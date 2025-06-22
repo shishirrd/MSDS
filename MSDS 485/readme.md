@@ -9,4 +9,4 @@ Describe the useful applications of encryption and blockchain technology.
 Contrast the United States and European Union data privacy and cybersecurity policies.
 Build a Data Governance Framework that exhibits the best practices of data management principles.
 
-### As this course had no coding requirements, this does not contain any submissions
+### As this course had no coding requirements, this folder does not contain any code/work submissions
