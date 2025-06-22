@@ -11,9 +11,11 @@ This course introduces data management and data preparation with a focus on appl
 ## MSDS 403-DL Data Science and Digital Transformation
 This is a case study course that gives students an opportunity to gain experience solving business problems and applying core skills needed for data science technical and leadership roles. The course introduces digital transformation, industry use cases, designing and measuring analytics projects, data considerations, data governance, digital trust and ethics, enterprise architecture and technology platforms, and organizational change management. Students act as data scientists, as strategists and leaders, evaluating alternative analytics projects and solving digital transformation challenges. Students learn how to apply a step-by-step development process, creating digital transformation roadmaps and addressing real-world business problems.
 
+## MSDS 401-DL Applied Statistics with R
+This course teaches fundamentals of statistical analysis. This includes evaluating statistical information, performing data analyses, and interpreting and communicating analytical results. Students will learn to use the R language for statistical analysis, data visualization, and report generation. Topics covered include descriptive statistics, central tendency, exploratory data analysis, probability theory, discrete and continuous distributions, statistical inference, correlation, multiple linear regression, contingency tables, and chi-square tests. Selected contemporary statistical concepts, such as bootstrapping, are introduced to supplement traditional statistical methods.
+
 ## Other courses I plan to take:
 ### Required Courses
-- MSDS 401-DL Applied Statistics with R	
 - MSDS 422-DL Practical Machine Learning	
 - MSDS 485-DL Data Governance, Ethics, and Law	
 - MSDS 460-DL Decision Analytics	
