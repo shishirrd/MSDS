@@ -1,0 +1,1 @@
+What factors affected survival on the Titanic and how can we apply machine learning to predict these outcomes? Through this report, we seek to provide insights into the historical social dynamics that shaped the disaster and provide stakeholders with insights that can help improve modern evacuation protocols. 
