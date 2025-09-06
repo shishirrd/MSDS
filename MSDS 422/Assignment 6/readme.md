@@ -1,0 +1,1 @@
+Can we apply machine learning to predict handwritten Kannada numbers? Through this analysis, we seek to develop a predictive model that can preserve the natural heritage of over 65 million Kannada speakers by helping stakeholders build digitization solutions. Further, this solution can be applied to reduce inefficiencies through automation and advanced analytics. 
