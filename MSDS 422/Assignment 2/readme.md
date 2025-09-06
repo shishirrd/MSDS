@@ -1,0 +1,1 @@
+What factors impact house prices the most in Ames, Iowa, and how do we use these factors to help stakeholders price houses more accurately? Through this analysis, we seek to inform a wide variety of stakeholders such as buyers seeking to identify overpriced houses, sellers looking to determine if their homes are underpriced, and government agencies for more accurate valuations. 
