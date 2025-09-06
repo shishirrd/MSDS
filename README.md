@@ -17,9 +17,11 @@ This course teaches fundamentals of statistical analysis. This includes evaluati
 ## MSDS 485-DL Data Governance, Ethics, and Law
 This course introduces data management concepts, including data quality, integrity, usability, consistency, and security. It considers the lineage of data, sometimes referred to as data provenance. It reviews ethical, legal, and technical issues relating to data acquisition and dissemination, as well as privacy protection. The course provides a management introduction to cybersecurity, including network, system, and database security, as well as encryption and blockchain technologies. The course covers laws relating to protecting intellectual property, with discussion of copyrights, patents, and contracts.
 
+## MSDS 422-DL Practical Machine Learning
+The course introduces machine learning with business applications. It provides a survey of statistical and machine learning algorithms and techniques including the machine learning framework, regression, classification, regularization and reduction, tree-based methods, unsupervised learning, and fully connected, convolutional, and recurrent neural networks. Students implement machine learning models with open-source software for data science. They explore data and learn from data, finding underlying patterns useful for data reduction, feature analysis, prediction, and classification. 
+
 ## Other courses I plan to take:
 ### Required Courses
-- MSDS 422-DL Practical Machine Learning	
 - MSDS 460-DL Decision Analytics	
 
 ### Electives	
