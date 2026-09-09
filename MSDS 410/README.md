@@ -1,4 +1,4 @@
-# MSDS 410 — Regression Analysis
+# MSDS 410 — Supervised Learning Methods
 
 Northwestern MSDS coursework on regression modeling — progressing from simple linear
 regression through multiple regression, variable selection, and generalized linear models
