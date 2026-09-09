@@ -1,0 +1,1188 @@
+---
+title: "Assignment 7: Logistic Regression Basics"
+author: "Shishir Deshpande"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+
+```
+
+```{r}
+# Load ICU data
+icu <- read_excel("icu.xlsx")
+```
+
+```{r}
+# ------------------------------------------------------------
+# 1a. Codebook — built directly from the data dictionary
+# ------------------------------------------------------------
+
+codebook <- data.frame(
+  Number = 1:21,
+  Variable = c("ID", "STA", "AGE", "SEX", "RACE", "SER", "CAN", "CRN",
+               "INF", "CPR", "SYS", "HRA", "PRE", "TYP", "FRA", "PO2",
+               "PH", "PCO", "BIC", "CRE", "LOC"),
+  Description = c(
+    "Identification Code",
+    "Vital Status",
+    "Age",
+    "Sex",
+    "Race",
+    "Service at ICU Admission",
+    "Cancer Part of Present Problem",
+    "History of Chronic Renal Failure",
+    "Infection Probable at ICU Admission",
+    "CPR Prior to ICU Admission",
+    "Systolic Blood Pressure at ICU Admission",
+    "Heart Rate at ICU Admission",
+    "Previous Admission to an ICU Within 6 Months",
+    "Type of Admission",
+    "Long Bone, Multiple, Neck, Single Area, or Hip Fracture",
+    "PO2 from Initial Blood Gases",
+    "PH from Initial Blood Gases",
+    "PCO2 from Initial Blood Gases",
+    "Bicarbonate from Initial Blood Gases",
+    "Creatinine from Initial Blood Gases",
+    "Level of Consciousness at ICU Admission"
+  ),
+  Codes = c(
+    "ID Number",
+    "0 = Lived, 1 = Died",
+    "Years",
+    "0 = Male, 1 = Female",
+    "1 = White, 2 = Black, 3 = Other",
+    "0 = Medical, 1 = Surgical",
+    "0 = No, 1 = Yes",
+    "0 = No, 1 = Yes",
+    "0 = No, 1 = Yes",
+    "0 = No, 1 = Yes",
+    "mm Hg",
+    "Beats/min",
+    "0 = No, 1 = Yes",
+    "0 = Elective, 1 = Emergency",
+    "0 = No, 1 = Yes",
+    "0 = >60, 1 = <=60",
+    "0 = >=7.25, 1 = <7.25",
+    "0 = <=45, 1 = >45",
+    "0 = >=18, 1 = <18",
+    "0 = <=2, 1 = >2",
+    "0 = No Coma or Deep Stupor, 1 = Deep Stupor, 2 = Coma"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(codebook, caption = "ICU Study Variable Codebook (Source: ICU Data Dictionary)")
+
+```
+
+```{r}
+# Verify all variable names in data match codebook
+cat("Variables in dataset:", paste(names(icu), collapse = ", "), "\n")
+cat("Variables in codebook:", paste(codebook$Variable, collapse = ", "), "\n")
+cat("Any mismatches:", paste(setdiff(names(icu), codebook$Variable), collapse = ", "), "\n")
+```
+
+```{r load-data}
+# Load ICU data
+icu <- read_excel("icu.xlsx")
+
+# Display structure
+str(icu)
+kable(summary(icu), caption = "Summary Statistics for ICU Dataset")
+
+```
+```{r}
+# --- Response Variable Distribution ---
+sta_freq <- as.data.frame(table(icu$STA))
+colnames(sta_freq) <- c("Status (0=Lived, 1=Died)", "Frequency")
+sta_freq$Proportion <- round(sta_freq$Frequency / sum(sta_freq$Frequency), 3)
+kable(sta_freq, caption = "Distribution of Response Variable: STA")
+```
+
+```{r correlation-plot}
+# Select only numeric columns
+numeric_vars <- icu[, sapply(icu, is.numeric)]
+
+# Correlation with STA
+sta_cor <- cor(numeric_vars, numeric_vars$STA, use = "complete.obs")
+
+# Barplot of correlations (excluding STA itself)
+barplot(sta_cor[rownames(sta_cor) != "STA", 1], las = 2, col = heat.colors(nrow(sta_cor)-1))
+
+```
+
+```{r}
+# --- Age Summary by Status ---
+age_by_sta <- do.call(data.frame, aggregate(AGE ~ STA, data = icu, FUN = function(x) {
+  c(Min    = round(min(x), 3),
+    Q1     = round(quantile(x, 0.25), 3),
+    Median = round(median(x), 3),
+    Mean   = round(mean(x), 3),
+    Q3     = round(quantile(x, 0.75), 3),
+    Max    = round(max(x), 3))
+}))
+kable(age_by_sta, caption = "Age Summary by Survival Status")
+
+# Survival rates by SEX and TYP
+kable(round(prop.table(table(SEX = icu$SEX, STA = icu$STA), margin = 1), 3),
+      caption = "Row Proportions: SEX (0=Male, 1=Female) vs STA")
+
+kable(round(prop.table(table(TYP = icu$TYP, STA = icu$STA), margin = 1), 3),
+      caption = "Row Proportions: TYP (0=Elective, 1=Emergency) vs STA")
+
+```
+
+# 1c. Visualizations
+```{r}
+# 1. Age distribution with density overlay
+hist(icu$AGE,
+     main   = "Figure 1.1: Distribution of Patient Age",
+     xlab   = "Age (years)",
+     col    = "lightblue",
+     border = "white",
+     freq   = FALSE)
+lines(density(icu$AGE), col = "navy", lwd = 2)
+
+# 2. Response variable — class imbalance check
+barplot(table(icu$STA),
+        main      = "Figure 1.2: Distribution of Survival Status",
+        names.arg = c("Lived (0)", "Died (1)"),
+        col       = c("steelblue", "tomato"),
+        ylab      = "Count",
+        border    = "white")
+
+# 3. Age by survival status
+boxplot(AGE ~ STA, data = icu,
+        main   = "Figure 1.3: Age by Survival Status",
+        xlab   = "Status",
+        ylab   = "Age (years)",
+        col    = c("steelblue", "tomato"),
+        border = "gray30",
+        names  = c("Lived (0)", "Died (1)"))
+
+# 4. SEX vs STA
+mosaicplot(table(SEX = icu$SEX, STA = icu$STA),
+           main  = "Figure 1.4: Sex vs Survival Status",
+           color = c("steelblue", "tomato"),
+           xlab  = "Sex (0=Male, 1=Female)",
+           ylab  = "Status (0=Lived, 1=Died)")
+
+# 5. TYP vs STA
+mosaicplot(table(TYP = icu$TYP, STA = icu$STA),
+           main  = "Figure 1.5: Admission Type vs Survival Status",
+           color = c("steelblue", "tomato"),
+           xlab  = "Admission Type (0=Elective, 1=Emergency)",
+           ylab  = "Status (0=Lived, 1=Died)")
+
+
+```
+
+# Task 2: SEX vs STA — 2x2 Contingency Table
+## 2a. Contingency Table
+```{r}
+# Apply labels directly for clarity
+icu$SEX_label <- factor(icu$SEX, levels = c(0, 1), labels = c("Male", "Female"))
+icu$STA_label <- factor(icu$STA, levels = c(0, 1), labels = c("Lived", "Died"))
+
+cont_sex <- table(SEX = icu$SEX_label, STA = icu$STA_label)
+
+kable(addmargins(cont_sex),
+      caption = "Table 2.1: 2x2 Contingency Table — SEX vs STA")
+
+
+```
+
+## 2b. Probabilities and Odds of Survival by Sex
+```{r}
+# Extract cell counts
+male_lived   <- cont_sex["Male",   "Lived"]
+male_died    <- cont_sex["Male",   "Died"]
+female_lived <- cont_sex["Female", "Lived"]
+female_died  <- cont_sex["Female", "Died"]
+
+# Probabilities of survival (not death)
+prob_male_survive   <- round(male_lived   / (male_lived   + male_died),   3)
+prob_female_survive <- round(female_lived / (female_lived + female_died), 3)
+
+# Odds of survival
+odds_male   <- round(male_lived   / male_died,   3)
+odds_female <- round(female_lived / female_died, 3)
+
+# Odds ratio: Males vs Females
+odds_ratio <- round(odds_male / odds_female, 3)
+
+# Summary table
+results_sex <- data.frame(
+  Group             = c("Male", "Female"),
+  Lived             = c(male_lived,           female_lived),
+  Died              = c(male_died,            female_died),
+  Total             = c(male_lived + male_died, female_lived + female_died),
+  P_Survival        = c(prob_male_survive,    prob_female_survive),
+  Odds_Survival     = c(odds_male,            odds_female)
+)
+
+kable(results_sex,
+      col.names = c("Group", "Lived", "Died", "Total",
+                    "P(Survival)", "Odds of Survival"),
+      caption   = "Table 2.2: Survival Probabilities and Odds by Sex")
+
+# Odds ratio
+cat("Odds Ratio of Survival (Male vs Female):", odds_ratio, "\n")
+```
+
+## 2c. Visualizations
+```{r}
+# 1. Grouped barplot — counts by sex and status
+barplot(cont_sex,
+        beside     = TRUE,
+        col        = c("steelblue", "tomato"),
+        legend.text = c("Male", "Female"),
+        args.legend = list(x = "topright", bty = "n"),
+        main       = "Figure 2.1: Survival Status Counts by Sex",
+        xlab       = "Survival Status",
+        ylab       = "Count",
+        names.arg  = c("Lived", "Died"),
+        border     = "white")
+
+# 2. Grouped barplot — proportions (row-normalized)
+prop_sex <- prop.table(cont_sex, margin = 1)
+
+barplot(t(prop_sex),
+        beside     = TRUE,
+        col        = c("steelblue", "tomato"),
+        legend.text = c("Lived", "Died"),
+        args.legend = list(x = "topright", bty = "n"),
+        main       = "Figure 2.2: Survival Proportions by Sex",
+        xlab       = "Sex",
+        ylab       = "Proportion",
+        names.arg  = c("Male", "Female"),
+        border     = "white")
+
+# 3. Mosaic plot — visual representation of the 2x2 table
+mosaicplot(cont_sex,
+           main  = "Figure 2.3: Mosaic Plot — Sex vs Survival Status",
+           color = c("steelblue", "tomato"),
+           xlab  = "Sex",
+           ylab  = "Survival Status")
+
+# 4. Odds ratio plot with reference line
+groups    <- c("Male", "Female")
+odds_vals <- c(odds_male, odds_female)
+
+barplot(odds_vals,
+        names.arg = groups,
+        col       = c("steelblue", "tomato"),
+        main      = "Figure 2.4: Odds of Survival by Sex",
+        ylab      = "Odds of Survival",
+        border    = "white",
+        ylim      = c(0, max(odds_vals) * 1.2))
+abline(h = 1, lty = 2, col = "gray40")  # reference: odds = 1 means 50/50
+text(x = 0.7, y = odds_male   + 0.1, labels = odds_male,   cex = 0.9)
+text(x = 1.9, y = odds_female + 0.1, labels = odds_female, cex = 0.9)
+
+
+```
+
+# Task 3: TYP vs STA — 2x2 Contingency Table
+## 3a. Contingency Table
+```{r}
+# Apply labels directly for clarity
+icu$TYP_label <- factor(icu$TYP, levels = c(0, 1), labels = c("Elective", "Emergency"))
+
+cont_typ <- table(TYP = icu$TYP_label, STA = icu$STA_label)
+
+kable(addmargins(cont_typ),
+      caption = "Table 3.1: 2x2 Contingency Table — TYP vs STA")
+
+```
+
+## 3b. Probabilities and Odds of Survival by Admission Type
+```{r}
+# Extract cell counts
+elective_lived  <- cont_typ["Elective",  "Lived"]
+elective_died   <- cont_typ["Elective",  "Died"]
+emergency_lived <- cont_typ["Emergency", "Lived"]
+emergency_died  <- cont_typ["Emergency", "Died"]
+
+# Probabilities of survival
+prob_elective_survive  <- round(elective_lived  / (elective_lived  + elective_died),  3)
+prob_emergency_survive <- round(emergency_lived / (emergency_lived + emergency_died), 3)
+
+# Odds of survival
+odds_elective  <- round(elective_lived  / elective_died,  3)
+odds_emergency <- round(emergency_lived / emergency_died, 3)
+
+# Odds ratio: Elective vs Emergency (elective as reference)
+odds_ratio_typ <- round(odds_elective / odds_emergency, 3)
+
+# Summary table
+results_typ <- data.frame(
+  Group         = c("Elective", "Emergency"),
+  Lived         = c(elective_lived,            emergency_lived),
+  Died          = c(elective_died,             emergency_died),
+  Total         = c(elective_lived + elective_died, emergency_lived + emergency_died),
+  P_Survival    = c(prob_elective_survive,     prob_emergency_survive),
+  Odds_Survival = c(odds_elective,             odds_emergency)
+)
+
+kable(results_typ,
+      col.names = c("Admission Type", "Lived", "Died", "Total",
+                    "P(Survival)", "Odds of Survival"),
+      caption   = "Table 3.2: Survival Probabilities and Odds by Admission Type")
+
+cat("Odds Ratio of Survival (Elective vs Emergency):", odds_ratio_typ, "\n")
+
+
+```
+
+## 3c. Visualizations
+```{r}
+# 1. Grouped barplot — counts by admission type and status
+barplot(cont_typ,
+        beside      = TRUE,
+        col         = c("steelblue", "tomato"),
+        legend.text = c("Elective", "Emergency"),
+        args.legend = list(x = "topright", bty = "n"),
+        main        = "Figure 3.1: Survival Status Counts by Admission Type",
+        xlab        = "Survival Status",
+        ylab        = "Count",
+        names.arg   = c("Lived", "Died"),
+        border      = "white")
+
+# 2. Grouped barplot — proportions (row-normalized)
+prop_typ <- prop.table(cont_typ, margin = 1)
+
+barplot(t(prop_typ),
+        beside      = TRUE,
+        col         = c("steelblue", "tomato"),
+        legend.text = c("Lived", "Died"),
+        args.legend = list(x = "topright", bty = "n"),
+        main        = "Figure 3.2: Survival Proportions by Admission Type",
+        xlab        = "Admission Type",
+        ylab        = "Proportion",
+        names.arg   = c("Elective", "Emergency"),
+        border      = "white")
+
+# 3. Mosaic plot
+mosaicplot(cont_typ,
+           main  = "Figure 3.3: Mosaic Plot — Admission Type vs Survival Status",
+           color = c("steelblue", "tomato"),
+           xlab  = "Admission Type",
+           ylab  = "Survival Status")
+
+# 4. Odds of survival by admission type with reference line
+odds_vals_typ <- c(odds_elective, odds_emergency)
+
+barplot(odds_vals_typ,
+        names.arg = c("Elective", "Emergency"),
+        col       = c("steelblue", "tomato"),
+        main      = "Figure 3.4: Odds of Survival by Admission Type",
+        ylab      = "Odds of Survival",
+        border    = "white",
+        ylim      = c(0, max(odds_vals_typ) * 1.2))
+abline(h = 1, lty = 2, col = "gray40")
+text(x = 0.7, y = odds_elective  + 0.5, labels = odds_elective,  cex = 0.9)
+text(x = 1.9, y = odds_emergency + 0.5, labels = odds_emergency, cex = 0.9)
+
+
+```
+
+# Task 4: Age as a Determinant
+## Task 4a: Logistic Regression Model Equations
+
+# The logistic regression model for STA (Y) using AGE (X):
+#
+# Logistic Regression Model:
+#
+#         exp(β₀ + β₁ · AGE)
+# π(x) = ─────────────────────
+#        1 + exp(β₀ + β₁ · AGE)
+#
+# Logit Transformation:
+#
+# logit(π) = ln(π / (1 - π)) = β₀ + β₁ · AGE
+#
+# Where:
+#   π(x)  = probability that STA = 1 (Died) given AGE = x
+#   β₀    = intercept (log-odds of death when AGE = 0)
+#   β₁    = change in log-odds of death for each one-year increase in AGE
+#   logit = natural log of the odds of death
+```{r}
+# Display equations using cat() for clean output in the knitted document
+cat("Logistic Regression Model:\n")
+cat("π(x) = exp(β₀ + β₁·AGE) / (1 + exp(β₀ + β₁·AGE))\n\n")
+cat("Logit Transformation:\n")
+cat("logit(π) = ln(π / (1 - π)) = β₀ + β₁·AGE\n\n")
+cat("Where:\n")
+cat("  π(x) = P(STA = 1 | AGE = x) = probability of death given age\n")
+cat("  β₀   = intercept\n")
+cat("  β₁   = change in log-odds of death per one-year increase in AGE\n")
+
+```
+
+## Task 4b: Scatterplot of STA by AGE
+```{r}
+# Add jitter to STA values so overlapping points are visible
+set.seed(42)
+jittered_sta <- jitter(icu$STA, amount = 0.05)
+
+plot(icu$AGE, jittered_sta,
+     main   = "Figure 4b: Survival Status by Age",
+     xlab   = "Age (years)",
+     ylab   = "Status (0 = Lived, 1 = Died)",
+     pch    = 19,
+     col    = ifelse(icu$STA == 1, "tomato", "steelblue"),
+     yaxt   = "n",
+     ylim   = c(-0.15, 1.15))
+
+# Custom y-axis with meaningful labels
+axis(2, at = c(0, 1), labels = c("Lived (0)", "Died (1)"), las = 1)
+
+# Reference lines at 0 and 1
+abline(h = c(0, 1), lty = 2, col = "gray70")
+
+# Add a smoothed trend line to show the underlying relationship
+lines(lowess(icu$AGE, icu$STA, f = 0.8), col = "black", lwd = 2)
+
+legend("topleft",
+       legend = c("Lived (0)", "Died (1)", "LOWESS trend"),
+       col    = c("steelblue", "tomato", "black"),
+       pch    = c(19, 19, NA),
+       lty    = c(NA, NA, 1),
+       lwd    = c(NA, NA, 2),
+       bty    = "n")
+
+```
+
+## Task 4c: Discretize AGE into AGE_CAT and Plot Proportions
+```{r}
+# Create AGE_CAT variable per assignment intervals
+icu$AGE_CAT <- cut(icu$AGE,
+                   breaks = c(15, 25, 35, 45, 55, 65, 75, 85, 95, Inf),
+                   labels = 1:9,
+                   right  = FALSE)   # intervals are [lower, upper)
+
+# Verify the categorization
+cat("AGE_CAT distribution:\n")
+kable(table(AGE_CAT = icu$AGE_CAT),
+      col.names = c("Age Category", "Count"),
+      caption   = "Table 4c.1: Count of Patients per Age Category")
+
+# Compute means and counts separately then merge
+age_cat_means  <- aggregate(STA ~ AGE_CAT, data = icu, FUN = mean)
+age_cat_counts <- aggregate(STA ~ AGE_CAT, data = icu, FUN = length)
+
+# Rename before merge to avoid collision
+names(age_cat_means)  <- c("AGE_CAT", "Proportion_Died")
+names(age_cat_counts) <- c("AGE_CAT", "N")
+
+age_cat_summary <- merge(age_cat_means, age_cat_counts, by = "AGE_CAT")
+age_cat_summary$Proportion_Died <- round(age_cat_summary$Proportion_Died, 3)
+
+# Add interval labels
+interval_labels <- c("[15,24]", "[25,34]", "[35,44]", "[45,54]",
+                     "[55,64]", "[65,74]", "[75,84]", "[85,94]", "[95+]")
+age_cat_summary$Interval <- interval_labels[as.numeric(age_cat_summary$AGE_CAT)]
+
+kable(age_cat_summary[, c("AGE_CAT", "Interval", "N", "Proportion_Died")],
+      col.names = c("AGE_CAT", "Age Interval", "N", "Proportion Died"),
+      caption   = "Table 4c.2: Proportion of Deaths by Age Category")
+
+```
+
+```{r fig.height=6, fig.width=8}
+# Visualization
+cat_nums  <- as.numeric(age_cat_summary$AGE_CAT)
+props     <- age_cat_summary$Proportion_Died
+ns        <- age_cat_summary$N
+intervals <- age_cat_summary$Interval
+
+# 1. Barplot — proportion died by age category
+barplot(props,
+        names.arg = intervals,
+        col       = "steelblue",
+        border    = "white",
+        main      = "Figure 4c.1: Proportion of Deaths by Age Category",
+        xlab      = "",
+        ylab      = "Proportion Died",
+        ylim      = c(0, 0.65),
+        las       = 2,
+        cex.names = 0.8,
+        cex.main  = 0.95)
+title(xlab = "Age Interval", line = 5.5)
+abline(h = mean(icu$STA), lty = 2, col = "tomato", lwd = 2)
+legend("topleft",
+       legend = paste("Overall =", round(mean(icu$STA), 3)),
+       lty = 2, col = "tomato", lwd = 2, bty = "n", cex = 0.75)
+
+# 2. Point + line plot — trend across categories
+plot(cat_nums, props,
+     type   = "b",
+     pch    = 19,
+     col    = "steelblue",
+     lwd    = 2,
+     main   = "Figure 4c.2: Proportion Died vs Age Category",
+     xlab   = "Age Category",
+     ylab   = "Proportion Died (Mean STA)",
+     xaxt   = "n",
+     ylim   = c(0, 0.6))
+axis(1,
+     at       = cat_nums,
+     labels   = intervals,
+     las      = 2,
+     cex.axis = 0.8)
+abline(h   = mean(icu$STA), lty = 2, col = "tomato", lwd = 2)
+text(x      = cat_nums,
+     y      = props + 0.03,
+     labels = paste0("n=", ns),
+     cex    = 0.75,
+     col    = "gray30")
+legend("topleft",
+       legend = paste("Overall mean =", round(mean(icu$STA), 3)),
+       lty    = 2,
+       col    = "tomato",
+       lwd    = 2,
+       bty    = "n")
+```
+
+## Task 4d: Fit Logistic Regression Model — STA ~ AGE
+```{r}
+# Fit the model
+model_age <- glm(STA ~ AGE, data = icu, family = binomial)
+
+# Coefficient Table
+coef_table <- as.data.frame(summary(model_age)$coefficients)
+coef_table <- round(coef_table, 3)
+names(coef_table) <- c("Estimate", "Std. Error", "z value", "p-value")
+
+kable(coef_table,
+      caption = "Table 4d.1: Logistic Regression Coefficients — STA ~ AGE")
+
+```
+
+```{r}
+# Odds Ratios with 95% Confidence Intervals
+or_table <- as.data.frame(
+  cbind(
+    OR    = round(exp(coef(model_age)), 3),
+    Lower = round(exp(confint(model_age)[, 1]), 3),
+    Upper = round(exp(confint(model_age)[, 2]), 3)
+  )
+)
+
+kable(or_table,
+      col.names = c("Odds Ratio", "95% CI Lower", "95% CI Upper"),
+      caption   = "Table 4d.2: Odds Ratios and 95% Confidence Intervals")
+
+# Fitted equation
+b0 <- round(coef(model_age)[1], 3)
+b1 <- round(coef(model_age)[2], 3)
+
+cat("Fitted Logistic Regression Model:\n")
+cat(sprintf("logit(π) = %.3f + %.3f · AGE\n\n", b0, b1))
+cat(sprintf("π(x) = exp(%.3f + %.3f · AGE) / (1 + exp(%.3f + %.3f · AGE))\n",
+            b0, b1, b0, b1))
+```
+
+## Task 4e: Hypothesis Test Results
+```{r}
+# Wald Tests (from model summary)
+cat("--- Wald Tests ---\n\n")
+cat("Intercept:\n")
+cat(sprintf("  H0: β₀ = 0  vs  Ha: β₀ ≠ 0\n"))
+cat(sprintf("  z = %.3f,  p-value = %.3f\n\n",
+            coef_table["(Intercept)", "z value"],
+            coef_table["(Intercept)", "p-value"]))
+
+cat("AGE Coefficient:\n")
+cat(sprintf("  H0: β₁ = 0 (AGE has no effect on survival)\n"))
+cat(sprintf("  Ha: β₁ ≠ 0 (AGE has a significant effect on survival)\n"))
+cat(sprintf("  z = %.3f,  p-value = %.3f\n\n",
+            coef_table["AGE", "z value"],
+            coef_table["AGE", "p-value"]))
+
+```
+
+# Likelihood Ratio Test (G statistic) — to compare fitted model to null model (intercept only)
+```{r}
+model_null <- glm(STA ~ 1, data = icu, family = binomial)
+
+lrt <- anova(model_null, model_age, test = "Chisq")
+
+cat("--- Likelihood Ratio Test ---\n\n")
+cat(sprintf("  Null deviance (intercept only): %.3f on %d df\n",
+            model_null$deviance, model_null$df.residual))
+cat(sprintf("  Residual deviance (AGE model):  %.3f on %d df\n",
+            model_age$deviance, model_age$df.residual))
+cat(sprintf("  G statistic (change in deviance): %.3f\n",
+            model_null$deviance - model_age$deviance))
+cat(sprintf("  Degrees of freedom: %d\n",
+            model_null$df.residual - model_age$df.residual))
+cat(sprintf("  p-value: %.3f\n\n",
+            lrt$`Pr(>Chi)`[2]))
+
+kable(lrt,
+      digits  = 3,
+      caption = "Table 4e.1: Likelihood Ratio Test — Null vs AGE Model")
+
+
+```
+
+## Task 4f: Model Fit Statistics — AIC, BIC, Deviance
+```{r}
+# Extract fit statistics
+fit_stats <- data.frame(
+  Statistic = c("Null Deviance", "Residual Deviance",
+                "Change in Deviance (G)", "AIC", "BIC"),
+  Value     = round(c(
+    model_age$null.deviance,
+    model_age$deviance,
+    model_age$null.deviance - model_age$deviance,
+    AIC(model_age),
+    BIC(model_age)
+  ), 3),
+  df = c(
+    model_age$df.null,
+    model_age$df.residual,
+    model_age$df.null - model_age$df.residual,
+    NA, NA
+  )
+)
+
+kable(fit_stats,
+      col.names = c("Statistic", "Value", "df"),
+      caption   = "Table 4f.1: Model Fit Statistics — STA ~ AGE",
+      na        = "")
+
+# Visualization — Null vs Fitted Deviance
+deviances <- c(model_null$deviance, model_age$deviance)
+dof       <- c(model_null$df.residual, model_age$df.residual)
+
+barplot(deviances,
+        names.arg = c("Null Model\n(Intercept Only)", "Fitted Model\n(AGE)"),
+        col       = c("gray70", "steelblue"),
+        border    = "white",
+        main      = "Figure 4f.1: Deviance Comparison — Null vs Fitted Model",
+        ylab      = "Deviance",
+        ylim      = c(0, max(deviances) * 1.15))
+text(x      = c(0.7, 1.9),
+     y      = deviances * 1.03,
+     labels = round(deviances, 3),
+     cex    = 0.9)
+
+```
+
+## Task 4g: Predicted Logits
+```{r}
+# Predict and save logits to the dataset
+icu$logit_AGE <- predict(model_age, type = "link")
+
+# Verify logits are saved correctly
+cat("First 10 predicted logits:\n")
+kable(head(data.frame(ID  = icu$ID,
+                      AGE = icu$AGE,
+                      STA = icu$STA,
+                      Logit = round(icu$logit_AGE, 3)), 10),
+      caption = "Table 4g.1: Sample of Predicted Logit Values")
+
+# Summary of predicted logits
+cat("\nSummary of Predicted Logits:\n")
+kable(data.frame(
+  Statistic = c("Min", "Q1", "Median", "Mean", "Q3", "Max"),
+  Value     = round(c(min(icu$logit_AGE),
+                      quantile(icu$logit_AGE, 0.25),
+                      median(icu$logit_AGE),
+                      mean(icu$logit_AGE),
+                      quantile(icu$logit_AGE, 0.75),
+                      max(icu$logit_AGE)), 3)
+),
+caption = "Table 4g.2: Summary of Predicted Logit Values")
+
+```
+
+```{r}
+# 1. Scatterplot of predicted logits by AGE — core requirement
+plot(icu$AGE, icu$logit_AGE,
+     main   = "Figure 4g.1: Predicted Logits by Age",
+     xlab   = "Age (years)",
+     ylab   = "Predicted Logit (Log-Odds of Death)",
+     pch    = 19,
+     col    = ifelse(icu$STA == 1, "tomato", "steelblue"),
+     ylim   = c(min(icu$logit_AGE) - 0.2, max(icu$logit_AGE) + 0.2))
+
+# Fitted line — logit is linear in AGE by definition
+abline(a   = coef(model_age)[1],
+       b   = coef(model_age)[2],
+       col = "black",
+       lwd = 2,
+       lty = 1)
+
+# Reference line at logit = 0 (i.e., π = 0.5, equal odds)
+abline(h   = 0, lty = 2, col = "gray50", lwd = 1.5)
+
+legend("topleft",
+       legend = c("Lived (STA=0)", "Died (STA=1)",
+                  "Fitted logit line", "logit = 0 (π = 0.50)"),
+       col    = c("steelblue", "tomato", "black", "gray50"),
+       pch    = c(19, 19, NA, NA),
+       lty    = c(NA, NA, 1, 2),
+       lwd    = c(NA, NA, 2, 1.5),
+       bty    = "n")
+
+# Annotate the age at which logit = 0 (crossover point)
+age_crossover <- round(-coef(model_age)[1] / coef(model_age)[2], 1)
+abline(v   = age_crossover, lty = 3, col = "gray50")
+text(x      = age_crossover + 2,
+     y      = min(icu$logit_AGE),
+     labels = paste0("Age = ", age_crossover, "\n(π = 0.50)"),
+     cex    = 0.8,
+     col    = "gray30",
+     adj    = 0)
+
+# 2. Logit by AGE colored by STA with marginal rug
+plot(icu$AGE, icu$logit_AGE,
+     main   = "Figure 4g.2: Predicted Logits by Age with Marginal Rug",
+     xlab   = "Age (years)",
+     ylab   = "Predicted Logit (Log-Odds of Death)",
+     pch    = 19,
+     col    = ifelse(icu$STA == 1, "tomato", "steelblue"),
+     ylim   = c(min(icu$logit_AGE) - 0.2, max(icu$logit_AGE) + 0.2))
+abline(a   = coef(model_age)[1],
+       b   = coef(model_age)[2],
+       col = "black", lwd = 2)
+abline(h   = 0, lty = 2, col = "gray50", lwd = 1.5)
+
+# Rug plots show actual AGE distribution for each STA group
+rug(icu$AGE[icu$STA == 0], col = "steelblue", side = 1, lwd = 1.2)
+rug(icu$AGE[icu$STA == 1], col = "tomato",    side = 3, lwd = 1.2)
+
+legend("topleft",
+       legend = c("Lived (STA=0)", "Died (STA=1)",
+                  "Fitted logit line", "logit = 0 (π = 0.50)"),
+       col    = c("steelblue", "tomato", "black", "gray50"),
+       pch    = c(19, 19, NA, NA),
+       lty    = c(NA, NA, 1, 2),
+       lwd    = c(NA, NA, 2, 1.5),
+       bty    = "n")
+
+```
+
+## Task 4h: Predicted Probabilities
+```{r}
+# Compute probabilities from logits
+icu$prob_AGE <- exp(icu$logit_AGE) / (1 + exp(icu$logit_AGE))
+
+# Verify probabilities saved correctly
+kable(head(data.frame(
+  ID       = icu$ID,
+  AGE      = icu$AGE,
+  STA      = icu$STA,
+  Logit    = round(icu$logit_AGE, 3),
+  Prob_Die = round(icu$prob_AGE,  3),
+  Prob_Sur = round(1 - icu$prob_AGE, 3)), 10),
+  col.names = c("ID", "AGE", "STA", "Logit",
+                "P(Death)", "P(Survival)"),
+  caption   = "Table 4h.1: Sample of Predicted Logits and Probabilities")
+
+# Summary of predicted probabilities
+kable(data.frame(
+  Statistic = c("Min", "Q1", "Median", "Mean", "Q3", "Max"),
+  Value     = round(c(min(icu$prob_AGE),
+                      quantile(icu$prob_AGE, 0.25),
+                      median(icu$prob_AGE),
+                      mean(icu$prob_AGE),
+                      quantile(icu$prob_AGE, 0.75),
+                      max(icu$prob_AGE)), 3)),
+  caption = "Table 4h.2: Summary of Predicted Probabilities of Death")
+
+```
+
+```{r}
+# Sort by AGE for clean S-curve line
+icu_sorted <- icu[order(icu$AGE), ]
+
+# 1. S-curve with raw data overlaid
+plot(icu$AGE, jitter(icu$STA, amount = 0.02),
+     main   = "Figure 4h.1: Predicted Probability of Death by Age",
+     xlab   = "Age (years)",
+     ylab   = "Probability",
+     pch    = 19,
+     col    = ifelse(icu$STA == 1, adjustcolor("tomato", alpha.f = 0.4),
+                                   adjustcolor("steelblue", alpha.f = 0.4)),
+     ylim   = c(-0.1, 1.1),
+     yaxt   = "n")
+axis(2, at = c(0, 0.25, 0.50, 0.75, 1.0))
+lines(icu_sorted$AGE, icu_sorted$prob_AGE, col = "black", lwd = 2.5)
+abline(h = 0.5, lty = 2, col = "gray50", lwd = 1.5)
+abline(v = age_crossover, lty = 3, col = "gray50", lwd = 1.5)
+text(x = age_crossover + 2, y = 0.08,
+     labels = paste0("Age = ", age_crossover, "\n(π = 0.50)"),
+     cex = 0.75, col = "gray30", adj = 0)
+legend("bottom",
+       legend = c("Lived (STA=0)", "Died (STA=1)", "Predicted P(Death)", "π = 0.50"),
+       col = c("steelblue", "tomato", "black", "gray50"),
+       pch = c(19, 19, NA, NA),
+       lty = c(NA, NA, 1, 2),
+       lwd = c(NA, NA, 2.5, 1.5),
+       bty = "n",
+       horiz = TRUE,
+       inset = c(0, -0.2),
+       xpd = TRUE,
+       cex = 0.7)
+
+
+# 2. Predicted probabilities only — clean S-curve
+plot(icu_sorted$AGE, icu_sorted$prob_AGE,
+     type   = "l",
+     lwd    = 2.5,
+     col    = "black",
+     main   = "Figure 4h.2: S-Shaped Logistic Curve — P(Death) by Age",
+     xlab   = "Age (years)",
+     ylab   = "Predicted Probability of Death",
+     ylim   = c(0, 1))
+
+# Shade the uncertainty band using binomial SE
+se_prob <- sqrt(icu_sorted$prob_AGE * (1 - icu_sorted$prob_AGE) / nrow(icu))
+polygon(c(icu_sorted$AGE, rev(icu_sorted$AGE)),
+        c(icu_sorted$prob_AGE + 1.96 * se_prob,
+          rev(icu_sorted$prob_AGE - 1.96 * se_prob)),
+        col    = adjustcolor("gray70", alpha.f = 0.4),
+        border = NA)
+lines(icu_sorted$AGE, icu_sorted$prob_AGE, col = "black", lwd = 2.5)
+
+abline(h   = 0.5, lty = 2, col = "gray50", lwd = 1.5)
+abline(v   = age_crossover, lty = 3, col = "gray50", lwd = 1.5)
+
+legend("top",
+       legend = c("Predicted P(Death)", "95% band", "π = 0.50"),
+       col    = c("black", "gray70", "gray50"),
+       lty    = c(1, NA, 2),
+       lwd    = c(2.5, NA, 1.5),
+       pch    = c(NA, 15, NA),
+       pt.cex = c(NA, 2, NA),
+       bty    = "n",
+       horiz = TRUE,
+       inset = c(0, -0.15), xpd = TRUE)
+
+# 3. Predicted probability of SURVIVAL (not death) — S-curve inverted
+plot(icu_sorted$AGE, 1 - icu_sorted$prob_AGE,
+     type   = "l",
+     lwd    = 2.5,
+     col    = "steelblue",
+     main   = "Figure 4h.3: Predicted Probability of Survival by Age",
+     xlab   = "Age (years)",
+     ylab   = "Predicted Probability of Survival",
+     ylim   = c(0, 1))
+
+# Overlay raw STA (inverted: STA=0 means survived)
+points(icu$AGE, jitter(1 - icu$STA, amount = 0.02),
+       pch = 19,
+       col = ifelse(icu$STA == 0, adjustcolor("steelblue", alpha.f = 0.3),
+                                  adjustcolor("tomato",    alpha.f = 0.3)))
+
+abline(h = 0.5, lty = 2, col = "gray50", lwd = 1.5)
+
+legend("bottom",
+       legend = c("Survived (STA=0)", "Died (STA=1)", "Predicted P(Survival)"),
+       col    = c("steelblue", "tomato", "steelblue"),
+       pch = c(19, 19, NA, NA),
+       lty = c(NA, NA, 1, 2),
+       lwd = c(NA, NA, 2.5, 1.5),
+       bty = "n",
+       horiz = TRUE,
+       inset = c(0, -0.2),
+       xpd = TRUE,
+       cex = 0.7)
+
+```
+
+## Task 4i: Predict Probability of Survival for a Specific Age
+```{r}
+# Set age and predict
+my_age <- 30
+
+new_data   <- data.frame(AGE = my_age)
+pred_logit <- predict(model_age, newdata = new_data, type = "link")
+pred_prob_death    <- predict(model_age, newdata = new_data, type = "response")
+pred_prob_survival <- 1 - pred_prob_death
+
+cat("=== Prediction for Age", my_age, "===\n\n")
+cat(sprintf("Predicted logit:               %.3f\n", pred_logit))
+cat(sprintf("Predicted P(Death):            %.3f\n", pred_prob_death))
+cat(sprintf("Predicted P(Survival):         %.3f\n", pred_prob_survival))
+
+```
+
+```{r}
+# Find the AGE_CAT this age belongs to
+age_cat_lookup <- cut(my_age,
+                      breaks = c(15, 25, 35, 45, 55, 65, 75, 85, 95, Inf),
+                      labels = c("[15,24]", "[25,34]", "[35,44]",
+                                 "[45,54]", "[55,64]", "[65,74]",
+                                 "[75,84]", "[85,94]", "[95+]"),
+                      right  = FALSE)
+
+# Observed proportion in that age category
+obs_prop <- age_cat_summary$Proportion_Died[
+              age_cat_summary$Interval == as.character(age_cat_lookup)]
+obs_n    <- age_cat_summary$N[
+              age_cat_summary$Interval == as.character(age_cat_lookup)]
+
+cat(sprintf("\nAge category:                  %s\n", age_cat_lookup))
+cat(sprintf("Observed N in category:        %d\n",   obs_n))
+cat(sprintf("Observed P(Death) in category: %.3f\n", obs_prop))
+cat(sprintf("Observed P(Survival):          %.3f\n", 1 - obs_prop))
+cat(sprintf("\nModel predicted P(Survival):   %.3f\n", pred_prob_survival))
+cat(sprintf("Observed P(Survival):          %.3f\n", 1 - obs_prop))
+cat(sprintf("Difference:                    %.3f\n",
+            pred_prob_survival - (1 - obs_prop)))
+```
+
+```{r}
+# Summary comparison table
+comparison <- data.frame(
+  Source    = c("Logistic Model (AGE only)",
+                paste0("Observed — Age Category ", age_cat_lookup),
+                "Overall Sample (Task 1)"),
+  P_Death   = round(c(pred_prob_death, obs_prop, mean(icu$STA)), 3),
+  P_Survival = round(c(pred_prob_survival, 1 - obs_prop, 1 - mean(icu$STA)), 3)
+)
+
+kable(comparison,
+      col.names = c("Source", "P(Death)", "P(Survival)"),
+      caption   = paste("Table 4i.1: Predicted vs Observed Survival —",
+                        "Age", my_age))
+```
+
+```{r fig.height=7, fig.width=8}
+# Visualizations
+# 1. S-curve with personal prediction highlighted
+
+plot(icu_sorted$AGE, 1 - icu_sorted$prob_AGE,
+     type = "l",
+     lwd  = 2.5,
+     col  = "steelblue",
+     main = paste("Figure 4i.1: Predicted P(Survival) by Age (Age", my_age, "Highlighted)"),
+     xlab = "Age (years)",
+     ylab = "Predicted Probability of Survival",
+     ylim = c(0, 1))
+points(icu$AGE, jitter(1 - icu$STA, amount = 0.02),
+       pch = 19,
+       col = ifelse(icu$STA == 0, adjustcolor("steelblue", alpha.f = 0.2),
+                                  adjustcolor("tomato", alpha.f = 0.2)))
+abline(v = my_age, lty = 2, col = "gray40", lwd = 1.5)
+abline(h = pred_prob_survival, lty = 2, col = "gray40", lwd = 1.5)
+abline(h = 0.5, lty = 3, col = "gray60")
+points(my_age, pred_prob_survival, pch = 18, col = "gold3", cex = 2.5)
+text(x = my_age + 3, y = pred_prob_survival - 0.05,
+     labels = sprintf("Age %d\nP(Surv)=%.3f", my_age, pred_prob_survival),
+     cex = 0.75, col = "gray20", adj = 0)
+legend("bottom",
+       legend = c("Survived", "Died", "Predicted", "Your age"),
+       col = c("steelblue", "tomato", "steelblue", "gold3"),
+       pch = c(19, 19, NA, 18),
+       lty = c(NA, NA, 1, NA),
+       lwd = c(NA, NA, 2.5, NA),
+       bty = "n",
+       horiz = TRUE,
+       inset = c(0, -0.2),
+       xpd = TRUE,
+       cex = 0.7)
+
+
+# 2. Comparison barplot — model vs observed vs overall
+barplot(t(as.matrix(comparison[, c("P_Death", "P_Survival")])),
+        beside    = TRUE,
+        col       = c("tomato", "steelblue"),
+        border    = "white",
+        main      = paste("Figure 4i.2: Survival Probability Comparison (Age", my_age, ")"),
+        names.arg = c("Model", "Observed", "Overall"),
+        ylab      = "Probability",
+        ylim      = c(0, 1.05),
+        cex.names = 0.85)
+abline(h = 1 - mean(icu$STA), lty = 2, col = "gray40", lwd = 1.5)
+legend("bottom",
+       legend = c("P(Death)", "P(Survival)", "Overall P(Survival)"),
+       col = c("tomato", "steelblue", "gray40"),
+       pch = c(15, 15, NA),
+       lty = c(NA, NA, 2),
+       lwd = c(NA, NA, 1.5),
+       bty = "n",
+       horiz = TRUE,
+       inset = c(0, -0.22),
+       xpd = TRUE,
+       cex = 0.75)
+
+
+```
+
+# Task 5: Recommendations for Next Phase of Modeling
+## 5a. Summary of Key Findings So Far
+```{r}
+# Compile evidence gathered across Tasks 1-4 into a summary table
+findings <- data.frame(
+  Task     = c("Task 1", "Task 2", "Task 2", "Task 3", "Task 3", "Task 4"),
+  Variable = c("Overall Sample", "SEX", "SEX", "TYP", "TYP", "AGE"),
+  Finding  = c(
+    paste0("20% mortality rate (", sum(icu$STA == 1),
+           " deaths / 200 patients). Class imbalance noted."),
+    paste0("P(Survival | Male) = ",   round(prob_male_survive,   3),
+           ", P(Survival | Female) = ", round(prob_female_survive, 3)),
+    paste0("OR (Male vs Female) = ",  round(odds_male / odds_female, 3),
+           " — minimal difference between sexes"),
+    paste0("P(Survival | Elective) = ", round(prob_elective_survive,  3),
+           ", P(Survival | Emergency) = ", round(prob_emergency_survive, 3)),
+    paste0("OR (Elective vs Emergency) = ", round(odds_elective / odds_emergency, 3),
+           " — strong predictor of survival"),
+    paste0("β₁ = ", round(coef(model_age)[2], 3),
+           ", OR per year = ", round(exp(coef(model_age)[2]), 3),
+           ", p = ", round(summary(model_age)$coefficients[2, 4], 3),
+           " — significant but modest effect")
+  )
+)
+
+kable(findings,
+      col.names = c("Task", "Variable", "Key Finding"),
+      caption   = "Table 5.1: Summary of Key Findings Across Tasks 1-4")
+```
+
+## 5b. Univariate Screening — all candidate predictors
+```{r}
+# Screen all binary/continuous predictors individually to identify which warrant inclusion in a multivariable model
+
+predictors <- c("AGE", "SEX", "RACE", "SER", "CAN", "CRN", "INF",
+                "CPR", "SYS", "HRA", "PRE", "TYP", "FRA",
+                "PO2", "PH", "PCO", "BIC", "CRE", "LOC")
+
+screening_results <- do.call(rbind, lapply(predictors, function(var) {
+  formula  <- as.formula(paste("STA ~", var))
+  fit      <- glm(formula, data = icu, family = binomial)
+  coef_row <- summary(fit)$coefficients
+
+  # Handle multi-level variables (RACE, LOC) — report omnibus deviance test
+  null_dev <- fit$null.deviance
+  res_dev  <- fit$deviance
+  g_stat   <- round(null_dev - res_dev, 3)
+  df_diff  <- fit$df.null - fit$df.residual
+  p_lrt    <- round(1 - pchisq(g_stat, df_diff), 3)
+
+  # For single-predictor variables grab the slope row
+  if (nrow(coef_row) == 2) {
+    data.frame(
+      Predictor = var,
+      Estimate  = round(coef_row[2, 1], 3),
+      OR        = round(exp(coef_row[2, 1]), 3),
+      z         = round(coef_row[2, 3], 3),
+      p_Wald    = round(coef_row[2, 4], 3),
+      G_stat    = g_stat,
+      p_LRT     = p_lrt,
+      AIC       = round(AIC(fit), 3)
+    )
+  } else {
+    # Multi-level: report LRT only
+    data.frame(
+      Predictor = var,
+      Estimate  = NA,
+      OR        = NA,
+      z         = NA,
+      p_Wald    = NA,
+      G_stat    = g_stat,
+      p_LRT     = p_lrt,
+      AIC       = round(AIC(fit), 3)
+    )
+  }
+}))
+
+kable(screening_results,
+      col.names = c("Predictor", "Estimate", "OR", "z",
+                    "p (Wald)", "G Statistic", "p (LRT)", "AIC"),
+      caption   = "Table 5.2: Univariate Screening — All Candidate Predictors",
+      na        = "—")
+```
+
+## 5c. Visualizations
+```{r fig.height=7, fig.width=8}
+# 1. Dot plot of LRT p-values — which predictors are significant?
+screening_results$Predictor <- factor(screening_results$Predictor,
+                                       levels = screening_results$Predictor[
+                                         order(screening_results$p_LRT)])
+
+dotchart(screening_results$p_LRT,
+         labels = screening_results$Predictor,
+         main   = "Figure 5.1: Univariate LRT p-values by Predictor\n(Sorted Ascending)",
+         xlab   = "LRT p-value",
+         pch    = 19,
+         col    = ifelse(screening_results$p_LRT <= 0.05, "tomato", "steelblue"),
+         lcolor = "gray90")
+abline(v   = 0.05, lty = 2, col = "gray40", lwd = 1.5)
+text(x      = 0.05,
+     y      = 1,
+     labels = "α = 0.05",
+     cex    = 0.8,
+     col    = "gray30",
+     adj    = -0.1)
+
+# 2. AIC comparison across univariate models
+screening_sorted_aic <- screening_results[order(screening_results$AIC), ]
+
+barplot(screening_sorted_aic$AIC,
+        names.arg = screening_sorted_aic$Predictor,
+        col       = ifelse(screening_sorted_aic$p_LRT <= 0.05, "tomato", "steelblue"),
+        border    = "white",
+        main      = "Figure 5.2: AIC by Univariate Model",
+        xlab      = "",
+        ylab      = "AIC",
+        las       = 2,
+        cex.names = 0.75,
+        ylim      = c(0, max(screening_sorted_aic$AIC) * 1.1))
+title(xlab = "Predictor", line = 5.5)
+abline(h = AIC(model_age), lty = 2, col = "gray40", lwd = 1.5)
+text(x = 2, y = AIC(model_age) + 3,
+     labels = paste0("AGE AIC = ", round(AIC(model_age), 3)),
+     cex = 0.75, col = "gray30", adj = 0)
+legend("bottom",
+       legend = c("Significant (p≤0.05)", "Not significant"),
+       fill = c("tomato", "steelblue"),
+       border = "white",
+       bty = "n",
+       horiz = TRUE,
+       inset = c(0, -0.25),
+       xpd = TRUE,
+       cex = 0.75)
+
+# 3. OR forest plot for significant predictors
+sig_predictors <- screening_results[
+  !is.na(screening_results$p_Wald) & screening_results$p_LRT <= 0.05, ]
+
+if (nrow(sig_predictors) > 0) {
+  par(mar = c(5, 6, 4, 2))
+  plot(sig_predictors$OR,
+       1:nrow(sig_predictors),
+       pch   = 18,
+       cex   = 1.8,
+       col   = "tomato",
+       xlim  = c(0, max(sig_predictors$OR, na.rm = TRUE) * 1.2),
+       xlab  = "Odds Ratio",
+       ylab  = "",
+       yaxt  = "n",
+       main  = "Figure 5.3: Odds Ratios — Significant Univariate Predictors")
+  axis(2,
+       at     = 1:nrow(sig_predictors),
+       labels = sig_predictors$Predictor,
+       las    = 1)
+  abline(v   = 1,   lty = 2, col = "gray40", lwd = 1.5)
+  abline(h   = 1:nrow(sig_predictors), lty = 3, col = "gray85")
+  par(mar = c(5, 4, 4, 2))
+}
+```
+
+```{r}
+
+```

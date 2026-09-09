@@ -1,0 +1,49 @@
+#```{r setup, include=FALSE}
+#options(scipen = 999)
+#knitr::opts_chunk$set(echo = TRUE)
+#options(digits = 4)
+
+#$$
+# Null=H_{0}:\beta_{1}=0
+#$$
+
+# Calculate p-value for nested F-test
+# F-statistic = 3.2772
+# Degrees of freedom: df1 = 2, df2 = 65
+
+f_stat <- 3.2772
+df1 <- 2  # numerator degrees of freedom (additional variables)
+df2 <- 65 # denominator degrees of freedom (residual df from full model)
+
+# Calculate p-value (upper tail probability)
+p_value <- pf(f_stat, df1, df2, lower.tail = FALSE)
+
+# Display result
+p_value
+
+# Importing required libraries
+library(tidyverse)
+library(knitr)
+
+# Importing the dataset
+ames_data <- read.csv("ames_housing_data.csv")
+(head(ames_data))
+
+# Dropping rows per EDA in Assignment 1
+cat("Original data has:", nrow(ames_data), "rows\n")
+ames_data_clean <- ames_data[ames_data$SaleCondition == "Normal" & 
+                              ames_data$BldgType == "1Fam", ]
+cat("Cleaned data has:", nrow(ames_data_clean), "rows\n")
+
+# Fill missing values with 0
+ames_data_clean[is.na(ames_data_clean)] <- 0
+
+# Model 3: Quality/Age Variables
+model3 <- lm(SalePrice ~ OverallQual + YearBuilt + YearRemodel + GarageYrBlt, data = ames_data_clean)
+
+# Summary for individual coefficient tests and overall F-test
+options(digits = 8)
+summary(model3)
+
+# Model 4: Combined Quality/Age + Size/Space Variables
+# (see full assignment for Model 4 specification and nested F-test comparison against Model 3)

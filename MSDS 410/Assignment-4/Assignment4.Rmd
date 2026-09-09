@@ -1,0 +1,1032 @@
+---
+title: "Assignment 4"
+author: "Shishir Deshpande"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r}
+# Import required libraries
+library(dplyr)
+library(tidyr)
+library(readr)
+library(knitr)
+library(corrplot)
+```
+
+```{r}
+# Import dataset
+ames_data <- read_csv("ames_housing_data.csv")
+```
+
+```{r}
+### We will define the sample population similar to Modeling Assignment 1. 
+## Remove non normal sale conditions
+## Filter to single family homes
+ames_data_clean <- ames_data %>%
+  filter(
+    BldgType == "1Fam",
+    SaleCondition == "Normal", 
+    GrLivArea <= 4000)
+
+head(ames_data_clean)
+```
+
+```{r}
+# Count rows for waterfall table
+n_original <- nrow(ames_data)
+not_1fam <- sum(ames_data$BldgType != "1Fam")
+not_normal <- sum(ames_data$SaleCondition != "Normal")
+n_after_bldg <- n_original - not_1fam
+n_after_sale <- ames_data %>% filter(BldgType == "1Fam", SaleCondition == "Normal") %>% nrow()
+over_4000 <- ames_data %>% filter(BldgType == "1Fam", SaleCondition == "Normal", GrLivArea > 4000) %>% nrow()
+```
+
+```{r}
+# Waterfall table
+data.frame(
+  Step = c("Original", "Focusing on single-family homes", 
+           "Excluding abnormal sale conditions", "Excluding homes > 4,000 sq ft"),
+  Remaining = c(n_original, n_after_bldg, n_after_sale, nrow(ames_data_clean)),
+  Dropped = c(0, not_1fam, n_after_bldg - n_after_sale, over_4000),
+  Pct_Remaining = c(100, 
+                    round(100 * n_after_bldg / n_original, 2),
+                    round(100 * n_after_sale / n_original, 2),
+                    round(100 * nrow(ames_data_clean) / n_original, 2))
+)
+```
+
+### As requested in the documentation, I filtered out houses beyond 4000 sq ft of GrLivArea
+
+```{r}
+### Let's find missing data across the values that remain in the cleaned dataset
+data.frame(
+  Variable = names(ames_data_clean),
+  Missing = colSums(is.na(ames_data_clean)),
+  Percent = round(100 * colSums(is.na(ames_data_clean)) / nrow(ames_data_clean), 2)
+) %>% filter(Missing > 0) %>% arrange(desc(Missing))
+```
+
+```{r}
+### Handling these missing values
+## Drop variables with >50% missing values and the indicator variables (not useful for modeling); impute the median for LotFrontage since it has 20%~ missing values and is quantitative/continuous; the rest will be filled with 0/None as applicable. Having a zero/None is also valuable as the lack of something can also change sale prices.
+ames_data_clean <- ames_data_clean %>%
+  select(-PoolQC, -MiscFeature, -Alley, -Fence, -FireplaceQu, -SID, -PID) %>%
+  mutate(
+    LotFrontage = replace_na(LotFrontage, median(LotFrontage, na.rm = TRUE)),
+    MasVnrArea = replace_na(MasVnrArea, median(MasVnrArea, na.rm = TRUE)),
+    across(c(GarageFinish, GarageType, GarageQual, GarageCond, BsmtExposure, BsmtFinType2, 
+             BsmtQual, BsmtCond, BsmtFinType1, MasVnrType, Electrical), ~replace_na(., "None")),
+    across(c(GarageYrBlt, BsmtFullBath, BsmtHalfBath), ~replace_na(., 0))
+  )
+```
+
+```{r}
+# Final check - shape and missing values
+cat("Final dataset shape:", nrow(ames_data_clean), "rows x", ncol(ames_data_clean), "columns\n")
+cat("Total missing values:", sum(is.na(ames_data_clean)))
+```
+
+```{r}
+## Finding outliers
+
+## Data Understanding
+continuous_vars <- names(ames_data_clean)[sapply(ames_data_clean, function(x) is.numeric(x) && length(unique(x)) > 10)]
+cat(continuous_vars)
+```
+
+```{r}
+# Histograms for continuous variables
+par(mfrow = c(5, 5), mar = c(2, 2, 2, 1))
+for(var in continuous_vars) {
+  hist(ames_data_clean[[var]], main = var, col = "lightblue", xlab = "")
+}
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Summary statistics for continuous variables
+kable(data.frame(
+  Variable = continuous_vars,
+  Mean = round(sapply(ames_data_clean[continuous_vars], mean, na.rm = TRUE), 4),
+  SD = round(sapply(ames_data_clean[continuous_vars], sd, na.rm = TRUE), 4),
+  Min = round(sapply(ames_data_clean[continuous_vars], min, na.rm = TRUE), 4),
+  Median = round(sapply(ames_data_clean[continuous_vars], median, na.rm = TRUE), 4),
+  Max = round(sapply(ames_data_clean[continuous_vars], max, na.rm = TRUE), 4)
+))
+```
+
+```{r}
+# Identify discrete variables
+discrete_vars <- names(ames_data_clean)[sapply(ames_data_clean, function(x) is.numeric(x) && length(unique(x)) <= 10)]
+discrete_vars
+```
+
+```{r}
+# Scatterplots for discrete variables vs SalePrice
+par(mfrow = c(3, 4), mar = c(3, 3, 2, 1))
+for(var in discrete_vars) {
+  plot(ames_data_clean[[var]], ames_data_clean$SalePrice, 
+       xlab = var, ylab = "SalePrice", main = var, pch = 20, col = "blue")
+}
+par(mfrow = c(1, 1))
+
+```
+
+```{r}
+## Correlation of explanatory variables to the response variable "SalePrice"
+# Get numeric variables only
+numeric_vars <- names(ames_data_clean)[sapply(ames_data_clean, is.numeric)]
+```
+
+```{r}
+# Correlation with SalePrice
+correlations <- cor(ames_data_clean[numeric_vars], use = "complete.obs")[, "SalePrice"]
+kable(data.frame(
+  Variable = names(correlations),
+  Correlation = round(correlations, 4)
+) %>% arrange(desc(abs(Correlation))))
+```
+
+```{r}
+# Correlation plot
+par(mfrow=c(1, 1))
+corrplot(cor(ames_data_clean[numeric_vars], use = "complete.obs"), 
+         method = "color", type = "upper", tl.cex = 0.7)
+```
+
+```{r}
+# Correlation amongst explanatory variables (>|0.7|). This excludes SalePrice since its our response variable
+# Correlation amongst explanatory variables (>|0.7|), excluding SalePrice
+cor_matrix <- cor(ames_data_clean[setdiff(numeric_vars, "SalePrice")], use = "complete.obs")
+cor_matrix[lower.tri(cor_matrix, diag = TRUE)] <- NA
+high_cor <- which(abs(cor_matrix) > 0.7, arr.ind = TRUE)
+kable(data.frame(
+  Var1 = rownames(cor_matrix)[high_cor[,1]],
+  Var2 = colnames(cor_matrix)[high_cor[,2]],
+  Correlation = round(cor_matrix[high_cor], 4)
+) %>% arrange(desc(abs(Correlation))))
+```
+
+# |Var1        |Var2         | Correlation|
+# |:-----------|:------------|-----------:|
+# |GarageCars  |GarageArea   |      0.8801|
+# |GrLivArea   |TotRmsAbvGrd |      0.8288|
+# |TotalBsmtSF |FirstFlrSF   |      0.7636|
+
+```{r}
+# Scatterplots of explanatory variables vs SalePrice
+par(mfrow = c(6, 6), mar = c(3, 3, 2, 1))
+for(var in setdiff(numeric_vars, "SalePrice")) {
+  plot(ames_data_clean[[var]], ames_data_clean$SalePrice, 
+       xlab = var, ylab = "SalePrice", main = var, pch = 20, col = "blue")
+}
+par(mfrow = c(1, 1))
+```
+
+# ====================================================== #
+### Assignment Task 1
+## Our response variable is SalePrice. The assignment asks us to select one variable to build a simple regression model. I will select GrLivArea since it had highest Correlation among the continuous variables.
+
+```{r}
+# Fitting the model
+model1 <- lm(SalePrice ~ GrLivArea, data = ames_data_clean)
+summary(model1)
+```
+
+```{r}
+# Scatterplot with regression line
+plot(ames_data_clean$GrLivArea, ames_data_clean$SalePrice, 
+     xlab = "Living Area", ylab = "Sale Price", 
+     main = "Sale Price vs Living Area", pch = 20, col = "blue")
+abline(model1, col = "red", lwd = 2)
+```
+
+```{r}
+# Model equation in equation form
+cat("SalePrice =", round(coef(model1)[1], 2), "+", round(coef(model1)[2], 2), "* Living Area\n")
+```
+
+```{r}
+# SalePrice = Beta0 + Beta1(OverallQual), where Beta0 (the intercept) is the Sale Price when OverallQual = 0. This value is +$9926.32 in the current Model1. Beta1 is the rate of change in SalePrice in response to each unit change of the Living Area. The value of this rate of change is $113.18 per unit of change in Living Area
+```
+
+```{r}
+# R-squared value in the context of this problem
+cat("R-squared:", round(summary(model1)$r.squared, 4), "\n")
+
+# This means 59.44% of the variation in Sale Price is explained by Overall Quality
+```
+
+```{r}
+# Coefficient and ANOVA Tables
+kable(summary(model1)$coefficients)
+
+# ANOVA Table
+kable(anova(model1))
+```
+
+```{r}
+# Hypothesis Tests: 
+# Null Hypothesis (H0): Living Area (Beta1) has no effect on SalePrice
+# Alternate Hypothesis (H1): Living Area (Beta1) has an effect on SalePrice
+cat("t-statistic:", round(summary(model1)$coefficients[2,3], 4), "\n")
+cat("p-value:", format.pval(summary(model1)$coefficients[2,4]), "\n")
+# Conclusion: p-value < 0.05 and we should reject the null hypothesis. Living Area significantly affects SalePrice
+```
+
+```{r}
+# OMNIBUS F-TEST:
+# Null Hypothesis (H0): The model has no explanatory power (Beta1 = 0)
+# Alternate Hypothesis (H1): The model has explanatory power (Beta1 ≠ 0)
+cat("F-statistic:", round(summary(model1)$fstatistic[1], 4), "\n")
+cat("p-value:", format.pval(pf(summary(model1)$fstatistic[1], summary(model1)$fstatistic[2], summary(model1)$fstatistic[3], lower.tail = FALSE)), "\n")
+# Conclusion: p-value < 0.05, reject the null hypothesis. The model is statistically significant.
+```
+
+```{r}
+# Set variables
+y <- ames_data_clean$SalePrice
+y_hat <- fitted(model1)
+std_resid <- rstandard(model1)
+```
+
+```{r}
+# Histogram of standardized residuals
+hist(std_resid, main = "Histogram of Standardized Residuals", 
+     xlab = "Standardized Residuals", col = "lightblue")
+```
+
+```{r}
+# Scatterplot of standardized residuals vs fitted values
+plot(y_hat, std_resid, 
+     xlab = "Fitted Values (Y_hat)", ylab = "Standardized Residuals",
+     main = "Residuals vs Fitted Values", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+```
+
+
+# The histogram shows right skewness with most residuals concentrated between -2 to +2. This indicates mild deviation from normality. 
+
+# On the other hand, the scatterplot reveals that the errors are centered around zero but are very distributed at the lowest and highest ends of the SalePrice distribution. The extremes suggest that the constant variance assumption is violated. 
+
+```{r}
+# Influence diagnostics
+leverage <- hatvalues(model1)
+cooks_d <- cooks.distance(model1)
+dffits_val <- dffits(model1)
+```
+
+```{r}
+# Identify influential points
+cat("High leverage points (h > 2*p/n):", sum(leverage > 2*2/length(y)), "\n")
+cat("High Cook's D points (D > 4/n):", sum(cooks_d > 4/length(y)), "\n")
+cat("High DFFITS points (|DFFITS| > 2*sqrt(p/n)):", sum(abs(dffits_val) > 2*sqrt(2/length(y))), "\n")
+```
+
+```{r}
+# Plot Cook's Distance
+plot(cooks_d, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+abline(h = 4/length(y), col = "red", lty = 2)
+```
+
+```{r}
+# Identify most influential observations
+influential <- which(cooks_d > 4/length(y))
+cat("\nInfluential observation indices:", influential, "\n")
+```
+
+
+## Discussion: 139 properties have unusual characteristics that disproportionately influence SalePrice. This means that either some quality ratings have outsized impact or lower than expected impact. 
+
+## Further, 112 properties have unusual quality ratings. Approximately 1 in 20 houses have low impact on SalePrice versus Living Area alone. This means that we will need other factors for more accurate estimation. 
+
+# ====================================================== #
+### Assignment Task 2
+```{r}
+# 2 explanatory variables: Model 2: GrLivArea, OverallQual
+model2 <- lm(SalePrice ~ GrLivArea + OverallQual, data = ames_data_clean)
+summary(model2)
+```
+
+```{r}
+# Prediction equation
+cat("SalePrice =", round(coef(model2)[1], 2), "+", 
+    round(coef(model2)[2], 2), "* Living Area +", 
+    round(coef(model2)[3], 2), "* Overall Quality\n\n")
+```
+
+# Coefficient interpretations
+# The intercept (Beta0) represents the SalePrice when both OverallQual and GrLivArea are equal to zero. This value is -$90122.64 for this model. The slope (Beta1) indicates change in SalePrice for every unit change in Living Area and Overall Quality. Price increases $64.58 for every point increase in Living Area (while holding Overall Quality constant) and $28795.52 (while holding Living Area constant).
+
+# Differences versus Model1
+# SalePrice = 9926.32 + 113.18 * Living Area
+# In Model 1, Living Area coefficient was $9926.32. In Model 2, Living Area coefficient is -$90122.64. This coefficient changed because the second model accounts for changes in Overall Quality as well. The coefficient in Model2 represents a partial effect of Overall Quality rather than a total effect. 
+
+```{r}
+# R-squared comparison
+r2_model1 <- summary(model1)$r.squared
+r2_model2 <- summary(model2)$r.squared
+r2_diff <- r2_model2 - r2_model1
+
+cat("Model 1 R-squared:", round(r2_model1, 4), "\n")
+cat("  ", round(r2_model1 * 100, 2), "% of variation in SalePrice is explained by Living Area alone.\n\n")
+
+cat("Model 2 R-squared:", round(r2_model2, 4), "\n")
+cat("  ", round(r2_model2 * 100, 2), "% of variation in SalePrice is explained by Living Area and Overall Quality Rating together.\n\n")
+
+cat("Difference in R-squared:", round(r2_diff, 4), "\n")
+cat("  Adding Overall Quality Rating to the model explains an additional ", round(r2_diff * 100, 2), 
+    "% of the variation in SalePrice.\n", sep="")
+cat("  This means Overall Quality Rating captures important information about home prices\n")
+cat("  that Living Area alone does not explain.\n")
+```
+
+```{r}
+# Coefficient Table
+cat("COEFFICIENT TABLE (Model 2)")
+kable(summary(model2)$coefficients)
+
+# ANOVA Table
+cat("ANOVA TABLE (Model 2)")
+kable(anova(model2))
+```
+
+# Hypothesis Tests for Individual Coefficients
+# TEST 1: Living Area Coefficient
+# Null Hypothesis (H0): Beta1 = 0 (Living Area has no effect on SalePrice, holding Overall Quality constant)
+# Alternate Hypothesis (H1): Beta1 ≠ 0 (Overall Quality has an effect on SalePrice, holding Living Area constant)
+```{r}
+cat("t-statistic:", round(summary(model2)$coefficients[2,3], 4), "\n")
+cat("p-value:", format.pval(summary(model2)$coefficients[2,4]), "\n")
+```
+# Conclusion: p-value < 0.05, so we will reject null hypothesis. Living Area significantly affects SalePrice.
+
+# TEST 2: GrLivArea Coefficient
+# Null Hypothesis (H0): Beta2 = 0 (Overall Quality has no effect on SalePrice, holding Living Area constant)
+# Alternate Hypothesis (H1): Beta2 ≠ 0 (Living Area has an effect on SalePrice, holding Overall Quality constant)
+```{r}
+cat("t-statistic:", round(summary(model2)$coefficients[3,3], 4), "\n")
+cat("p-value:", format.pval(summary(model2)$coefficients[3,4]), "\n")
+```
+# Conclusion: p-value < 0.05, we will reject null hypothesis. Overall Quality significantly affects SalePrice.
+
+# OMNIBUS F-TEST
+# Null Hypothesis (H0): Both Beta1 (Living Area) & Beta2 (Overall Quality) = 0 (The model has no explanatory power)
+# Alternate Hypothesis (H1): At least one Beta ≠ 0 (The model has explanatory power)
+```{r}
+cat("F-statistic:", round(summary(model2)$fstatistic[1], 4), "\n")
+cat("p-value:", format.pval(pf(summary(model2)$fstatistic[1], 
+                               summary(model2)$fstatistic[2], 
+                               summary(model2)$fstatistic[3], 
+                               lower.tail = FALSE)), "\n")
+```
+# Conclusion: p-value < 0.05, we reject the Null Hypothesis. The model is statistically significant.
+# Both Living Area and Basement Square Footage together provide significant explanatory power for SalePrice.
+
+```{r}
+# Assumption Checking for Model 2
+y_hat2 <- fitted(model2)
+std_resid2 <- rstandard(model2)
+```
+
+```{r}
+# Histogram of standardized residuals
+hist(std_resid2, main = "Histogram of Standardized Residuals (Model 2)", 
+     xlab = "Standardized Residuals", col = "lightblue")
+
+# Scatterplot of standardized residuals vs fitted values
+plot(y_hat2, std_resid2, 
+     xlab = "Fitted Values (Y_hat)", ylab = "Standardized Residuals",
+     main = "Residuals vs Fitted Values (Model 2)", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+```
+
+# Assessment of assumptions
+# The histogram shows somewhat right skewness with most residuals concentrated between -2 to +2. This indicates mild deviation from normality. 
+
+# On the other hand, the scatterplot reveals that the overall spread is relatively constant in the middle range. There is a slight increase in spread and outliers at higher values but the plot is centered around 0.
+
+```{r}
+# Influence diagnostics
+leverage2 <- hatvalues(model2)
+cooks_d2 <- cooks.distance(model2)
+dffits_val2 <- dffits(model2)
+```
+
+```{r}
+# Identify influential points
+cat("High leverage points (h > 2*p/n):", sum(leverage2 > 2*2/length(y)), "\n")
+cat("High Cook's D points (D > 4/n):", sum(cooks_d2 > 4/length(y)), "\n")
+cat("High DFFITS points (|DFFITS| > 2*sqrt(p/n)):", sum(abs(dffits_val2) > 2*sqrt(2/length(y))), "\n")
+```
+
+```{r}
+# Plot Cook's Distance
+plot(cooks_d2, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+abline(h = 4/length(y), col = "red", lty = 2)
+```
+
+```{r}
+# Identify most influential observations
+influential2 <- which(cooks_d2 > 4/length(y))
+cat("\nInfluential observation indices:", influential2, "\n")
+```
+
+
+# Discussion of Influential Points
+# High leverage points (h > 2*p/n): 351 (~1.75% of data)
+# High Cook's Distance points (D > 4/n): 129 (~0.6%)
+# High DFFITS points (|DFFITS| > 2*sqrt(p/n)): 176 (~0.9%)
+
+### Model 1
+# High leverage points (h > 2*p/n): 139 
+# High Cook's D points (D > 4/n): 112 
+# High DFFITS points (|DFFITS| > 2*sqrt(p/n)): 113
+
+# 1. INCREASED LEVERAGE: Model 2 has 351 high leverage points compared to 139 in Model 1 as adding OverallQual creates more combinations to predict SalePrice.
+
+# 2. SIMILAR INFLUENTIAL POINTS: Cook's Distance identifies 129 influential points in Model 2 (vs. 112 in Model 1), suggesting that adding Overall Quality Rating only slightly changed which observations strongly influence the regression coefficients.
+
+# 3. MODEL STABILITY: While ~6% of observations are influential, the model remains statistically significant with strong R-squared. However, predictions for homes with unusual size and quality combinations should be interpreted cautiously.
+
+# 4. The presence of influential points suggests that the model may need more predictors to better capture price variation. We should investigate whether influential points are legitimate outliers (e.g., luxury homes, unique properties) but it is well established that the model performs best for typical homes with average quality and size combinations.
+
+# Decision: Should both variables be retained?
+```{r}
+# Check correlation between predictors
+cor_predictors <- cor(ames_data_clean$GrLivArea, ames_data_clean$OverallQual)
+cat("Correlation between GrLivArea and OverallQual:", round(cor_predictors, 4), "\n\n")
+```
+
+# Based on the correlation of 0.6221 between GrLivArea and OverallQual, I recommend retaining both variables in the model. While this correlation indicates a low, positive relationship between quality and living area, it remains below the 0.7 threshold typically used to identify problematic multicollinearity.
+
+# Both variables demonstrate strong statistical significance with p-values < 0.05, indicating each contributes meaningful explanatory power to predicting sale prices even when controlling for the other. The addition of OverallQual to the model improved the R-squared substantially, explaining an additional portion of variance in home prices beyond what GrLivArea captures alone. This improvement demonstrates that living area provides unique information not already captured by quality ratings.
+
+# From a practical standpoint, these variables measure fundamentally different aspects of a home that buyers value. GrLivArea reflects the craftsmanship, materials, and finishes—essentially how well a home is built. OverallQual, on the other hand, measures the quality of the construction. A home can be small but exceptionally well-built, or large but of average quality. Buyers consider both factors independently when making purchasing decisions, so including both variables creates a more realistic and comprehensive pricing model.
+
+# ====================================================== #
+### Assignment Task 3
+# Model 3: GrLivArea, OverallQual, TotalBsmtSF
+```{r}
+model3 <- lm(SalePrice ~ GrLivArea + OverallQual + TotalBsmtSF, data = ames_data_clean)
+summary(model3)
+```
+
+# Prediction equation
+```{r}
+cat("SalePrice =", round(coef(model3)[1], 2), "+", 
+    round(coef(model3)[2], 2), "* Living Area +", 
+    round(coef(model3)[3], 2), "* Overall Quality Rating +",
+    round(coef(model3)[4], 2), "* Basement Square Footage\n\n")
+```
+```{r}
+cat("SalePrice =", round(coef(model2)[1], 2), "+", 
+    round(coef(model2)[2], 2), "* Living Area +", 
+    round(coef(model2)[3], 2), "* Overall Quality Rating +")
+```
+# Coefficient interpretations
+# The intercept (Beta0) represents the SalePrice when Living Area, OverallQual, and TotalBsmtSF are all equal to zero. This value is -$93836.94 for the three-variable model. The slopes indicate change in SalePrice for every unit change in each predictor. Price increases $60.22 for every unit increase in Living Area (holding Overall Quality and Basement Square Footage constant), $21908.98 for Overall Quality (holding Living Area and Basement Square Footage constant), and $49.97 for Basement Square Footage (holding the other two constant).
+
+# Differences versus two-variable model
+# In the two-variable model, the intercept was -$90122.64. In the three-variable model, the intercept is -$93836.94. The Living Area coefficient decreased from $64.58 to $60.22, and the Overall Quality coefficient decreased from $28795.52 to $21908.98. These coefficients changed because the three-variable model accounts for Basement Square Footage as well. The coefficients in the three-variable model represent partial effects after controlling for all three predictors rather than just two.
+
+# R-squared comparison
+```{r}
+r2_model3 <- summary(model3)$r.squared
+r2_diff_3_2 <- r2_model3 - r2_model2
+
+cat("Model 2 R-squared:", round(r2_model2, 4), "\n")
+cat("Model 3 R-squared:", round(r2_model3, 4), "\n")
+cat("Improvement:", round(r2_diff_3_2, 4), "(", round(r2_diff_3_2 * 100, 2), "%)\n\n")
+
+cat("Difference in R-squared:", round(r2_diff_3_2, 4), "\n")
+cat("  Adding Basement Square Footage to the model explains an additional ", round(r2_diff_3_2 * 100, 2), 
+    "% of the variation in SalePrice.\n", sep="")
+cat("  This means Basement Square Footage captures important information about home prices\n")
+cat("  that Living Area & Overall Quality alone does not explain.\n")
+```
+
+```{r}
+# Coefficient and ANOVA Tables
+kable(summary(model3)$coefficients)
+
+kable(anova(model3))
+```
+
+```{r}
+# Check multicollinearity
+cat("Correlation between predictors:\n")
+cat("GrLivArea & OverallQual:", round(cor(ames_data_clean$GrLivArea, ames_data_clean$OverallQual), 4), "\n")
+cat("GrLivArea & TotalBsmtSF:", round(cor(ames_data_clean$GrLivArea, ames_data_clean$TotalBsmtSF), 4), "\n")
+cat("OverallQual & TotalBsmtSF:", round(cor(ames_data_clean$OverallQual, ames_data_clean$TotalBsmtSF), 4), "\n")
+```
+
+# Hypothesis Tests for Individual Coefficients
+# TEST 1: Living Area Coefficient
+# Null Hypothesis (H0): Beta1 = 0 (Living Area has no effect on SalePrice, holding Overall Quality and Basement Square Footage constant)
+# Alternate Hypothesis (H1): Beta1 ≠ 0 (Living Area has an effect on SalePrice, holding Overall Quality and Basement Square Footage constant)
+```{r}
+cat("t-statistic:", round(summary(model3)$coefficients[2,3], 4), "\n")
+cat("p-value:", format.pval(summary(model3)$coefficients[2,4]), "\n")
+```
+# Conclusion: p-value < 0.05, so we will reject null hypothesis. Living Area significantly affects SalePrice.
+
+# TEST 2: Overall Quality Coefficient
+# Null Hypothesis (H0): Beta2 = 0 (Overall Quality has no effect on SalePrice, holding Living Area and Basement Square Footage constant)
+# Alternate Hypothesis (H1): Beta2 ≠ 0 (Overall Quality has an effect on SalePrice, holding Living Area and Basement Square Footage constant)
+```{r}
+cat("t-statistic:", round(summary(model3)$coefficients[3,3], 4), "\n")
+cat("p-value:", format.pval(summary(model3)$coefficients[3,4]), "\n")
+```
+# Conclusion: p-value < 0.05, we will reject null hypothesis. Basement Square Footage significantly affects SalePrice.
+
+# TEST 3: Basement Sq Ft Coefficient
+# Null Hypothesis (H0): Beta3 = 0 (Basement Square Footage has no effect on SalePrice, holding Living Area and Overall Quality constant)
+# Alternate Hypothesis (H1): Beta3 ≠ 0 (Basement Square Footage has an effect on SalePrice, holding Living Area and Overall Quality constant)
+```{r}
+cat("t-statistic:", round(summary(model3)$coefficients[4,3], 4), "\n")
+cat("p-value:", format.pval(summary(model3)$coefficients[4,4]), "\n")
+```
+# Conclusion: p-value < 0.05, we will reject null hypothesis. Basement Square Footage significantly affects SalePrice.
+
+# OMNIBUS F-TEST
+# Null Hypothesis (H0): Beta1 (Living Area), Beta2 (Overall Quality), & Beta3 (Basement Square Footage) = 0 (The model has no explanatory power)
+# Alternate Hypothesis (H1): At least one Beta ≠ 0 (The model has explanatory power)
+```{r}
+cat("F-statistic:", round(summary(model3)$fstatistic[1], 4), "\n")
+cat("p-value:", format.pval(pf(summary(model3)$fstatistic[1], 
+                               summary(model3)$fstatistic[2], 
+                               summary(model3)$fstatistic[3], 
+                               lower.tail = FALSE)), "\n")
+```
+# Conclusion: p-value < 0.05, we reject the Null Hypothesis. The model is statistically significant.
+# Living Area, Overall Quality, and Basement Square Footage together provide significant explanatory power for SalePrice.
+
+# Assumption Checking for Model 2
+```{r}
+y_hat3 <- fitted(model3)
+std_resid3 <- rstandard(model3)
+```
+
+# Histogram of standardized residuals
+```{r}
+hist(std_resid3, main = "Histogram of Standardized Residuals (Model 3)", 
+     xlab = "Standardized Residuals", col = "lightblue")
+
+# Scatterplot of standardized residuals vs fitted values
+plot(y_hat3, std_resid3, 
+     xlab = "Fitted Values (Y_hat)", ylab = "Standardized Residuals",
+     main = "Residuals vs Fitted Values (Model 3)", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+```
+
+# Assessment of assumptions
+# The histogram shows somewhat right skewness with most residuals concentrated between -2 to +2, similar to models 1 & 2. This indicates mild deviation from normality. 
+
+# The scatterplot shows residuals centered around zero. While the spread is relatively constant in the middle range, there is an increase in variance at higher values, with several extreme positive outliers present. This suggests mild-to-moderate heteroscedasticity.
+
+# Influence diagnostics
+```{r}
+leverage3 <- hatvalues(model3)
+cooks_d3 <- cooks.distance(model3)
+dffits_val3 <- dffits(model3)
+```
+
+# Identify influential points
+```{r}
+cat("High leverage points (h > 2*p/n):", sum(leverage3 > 2*2/length(y)), "\n")
+cat("High Cook's D points (D > 4/n):", sum(cooks_d3 > 4/length(y)), "\n")
+cat("High DFFITS points (|DFFITS| > 2*sqrt(p/n)):", sum(abs(dffits_val3) > 2*sqrt(2/length(y))), "\n")
+```
+
+# Plot Cook's Distance
+```{r}
+plot(cooks_d3, type = "h", main = "Cook's Distance", ylab = "Cook's D")
+abline(h = 4/length(y), col = "red", lty = 2)
+```
+
+# Identify most influential observations
+```{r}
+influential3 <- which(cooks_d3 > 4/length(y))
+cat("\nInfluential observation indices:", influential3, "\n")
+```
+
+# Discussion of Influential Points
+# High leverage points (h > 2*p/n): 636 
+# High Cook's D points (D > 4/n): 143 
+# High DFFITS points (|DFFITS| > 2*sqrt(p/n)): 249 
+
+# Model 2
+# High leverage points (h > 2*p/n): 351 (~1.75% of data)
+# High Cook's Distance points (D > 4/n): 129 (~0.6%)
+# High DFFITS points (|DFFITS| > 2*sqrt(p/n)): 176 (~0.9%)
+
+# 1. SUBSTANTIALLY INCREASED LEVERAGE: Model 3 has 636 high leverage points compared to 351 in Model 2. Adding Basement Square Footage dramatically increases leverage as it creates even more unique combinations of predictor values to predict SalePrice.
+
+# 2. STABLE INFLUENTIAL POINTS: Cook's Distance identifies 142 influential points in Model 3 (vs. 129 in Model 2), suggesting that adding Basement Square Footage did not substantially change which observations strongly influence the regression coefficients. The influential observations remain relatively consistent across models.
+
+# 3. MODEL STABILITY CONCERNS: While the model remains statistically significant with improved R-squared, nearly 28% of observations have high leverage. This indicates that many homes have unusual combinations of living area, quality ratings, and basement size. Predictions for homes with atypical size combinations should be interpreted with caution.
+
+# 4. The presence of influential points suggests that while the model captures more variation with three predictors, it may be sensitive to unusual property configurations. The influential points are likely legitimate outliers (e.g., luxury homes, unique properties, homes with disproportionately large basements). The model performs best for typical homes with average size combinations across all three dimensions.
+
+# Retention check for Model 3
+# Decision: Should all three variables be retained?
+
+# Check pairwise correlations between all predictors
+```{r}
+cat("Correlation between predictors:\n")
+cat("GrLivArea & OverallQual:", round(cor(ames_data_clean$GrLivArea, ames_data_clean$OverallQual), 4), "\n")
+cat("GrLivArea & TotalBsmtSF:", round(cor(ames_data_clean$GrLivArea, ames_data_clean$TotalBsmtSF), 4), "\n")
+cat("OverallQual & TotalBsmtSF:", round(cor(ames_data_clean$OverallQual, ames_data_clean$TotalBsmtSF), 4), "\n")
+```
+
+# I recommend retaining all three variables in the model. The pairwise correlations between predictors are all below the 0.7 threshold typically used to identify problematic multicollinearity: GrLivArea & TotalBsmtSF (0.6221), GrLivArea & TotalBsmtSF (0.3931), and OverallQual & TotalBsmtSF (0.5262). These moderate correlations indicate the predictors share some information but each captures unique aspects of home value.
+
+# All three variables demonstrate strong statistical significance with p-values < 0.05, indicating each contributes meaningful explanatory power to predicting sale prices even when controlling for the others. The addition of Basement Sq Footage to Model 2 improved the R-squared, explaining additional variance in home prices beyond what Living Area and Overall Quality capture alone. This improvement demonstrates that Garage Area provides unique information not already captured by the other two predictors.
+
+# From a practical standpoint, these variables measure fundamentally different aspects of a home that buyers value. GrLivArea reflects the main living space, OverallQual captures below-grade space (often valued differently), and TotalBsmtSF represents living/storage capacity. A home can have large living area but small basement, or vice versa. Buyers consider all three factors independently when making purchasing decisions, so including all three variables creates a more realistic and comprehensive pricing model.
+
+# However, the substantial increase in high leverage points (636 observations, or 32% of data) suggests the model may be sensitive to unusual property configurations. While this doesn't invalidate the model, predictions should be interpreted cautiously for homes with atypical combinations of these three size dimensions.
+
+# ====================================================== #
+### Assignment Task 4
+```{r}
+# Create log-transformed SalePrice variable
+ames_data_clean$LogSalePrice <- log(ames_data_clean$SalePrice)
+```
+
+```{r}
+# Model 4: Natural Log transformation of SalePrice
+model4 <- lm(LogSalePrice ~ GrLivArea + OverallQual + TotalBsmtSF, data = ames_data_clean)
+summary(model4)
+```
+
+```{r}
+# Prediction equation
+cat("log(SalePrice) =", round(coef(model4)[1], 6), "+", 
+    round(coef(model4)[2], 6), "* Living Area +", 
+    round(coef(model4)[3], 6), "* Overall Quality +",
+    round(coef(model4)[4], 6), "* Basement Square Footage\n\n")
+```
+
+```{r}
+# Goodness-of-fit comparison: Model 3 vs Model 4
+# R-squared comparison
+cat("Model 3 R-squared:", round(summary(model3)$r.squared, 4), "\n")
+cat("Model 4 R-squared:", round(summary(model4)$r.squared, 4), "\n")
+cat("Improvement:", round(summary(model4)$r.squared - summary(model3)$r.squared, 4), "\n\n")
+```
+
+```{r}
+# Adjusted R-squared comparison
+cat("Model 3 Adjusted R-squared:", round(summary(model3)$adj.r.squared, 4), "\n")
+cat("Model 4 Adjusted R-squared:", round(summary(model4)$adj.r.squared, 4), "\n")
+cat("Improvement:", round(summary(model4)$adj.r.squared - summary(model3)$adj.r.squared, 4), "\n\n")
+```
+
+```{r}
+# Residual standard error comparison
+cat("Model 3 Residual Standard Error:", round(summary(model3)$sigma, 2), "\n")
+cat("Model 4 Residual Standard Error:", round(summary(model4)$sigma, 4), "\n\n")
+```
+
+```{r}
+# Assumption checking for Model 4
+y_hat4 <- fitted(model4)
+std_resid4 <- rstandard(model4)
+```
+
+```{r}
+# Histogram of standardized residuals
+hist(std_resid4, main = "Histogram of Standardized Residuals (Model 4)", 
+     xlab = "Standardized Residuals", col = "lightblue")
+```
+
+# Scatterplot of standardized residuals vs fitted values
+```{r}
+plot(y_hat4, std_resid4, 
+     xlab = "Fitted Values (log(Y_hat))", ylab = "Standardized Residuals",
+     main = "Residuals vs Fitted Values (Model 4)", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+```
+
+```{r}
+# Side-by-side comparison of residual plots
+par(mfrow = c(2, 2))
+hist(std_resid3, main = "Model 3: Residuals", xlab = "Standardized Residuals", col = "lightblue")
+hist(std_resid4, main = "Model 4: Residuals", xlab = "Standardized Residuals", col = "lightgreen")
+plot(y_hat3, std_resid3, xlab = "Fitted Values", ylab = "Std Residuals", 
+     main = "Model 3: Residuals vs Fitted", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+plot(y_hat4, std_resid4, xlab = "Fitted Values (log)", ylab = "Std Residuals", 
+     main = "Model 4: Residuals vs Fitted", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+par(mfrow = c(1, 1))
+```
+
+# Assessment and Discussion
+# Does the transformed model fit better?
+
+# The visualizations point to MIXED RESULTS. The log-transformed Model 4 shows improvements in some areas but introduces new issues:
+
+# 1. NORMALITY TRADE-OFF: Model 3 (left, blue) shows right skewness with a long tail extending to positive values. Model 4 (right, green) shows left skewness with a long tail extending to negative values. While Model 4 appears more symmetric overall with a taller central peak, both models deviate from perfect normality in opposite directions
+
+# 2. DRAMATICALLY REDUCED HETEROSCEDASTICITY: The residuals vs fitted values plot reveals substantial improvement. Model 3 (bottom left) shows a clear funnel pattern with variance increasing dramatically as fitted values increase, indicating severe heteroscedasticity. Model 4 (bottom right) displays much more constant variance across all fitted values, with residuals evenly distributed above and below zero throughout the range. This is a major improvement.
+
+# 3. FEWER EXTREME OUTLIERS: Model 3 has several extreme positive outliers (residuals exceeding -4 and extending to +8), particularly at higher price levels. Model 4 has substantially fewer extreme residuals, with most contained within ±2 standard deviations, suggesting better handling of expensive homes.
+
+# 4. BETTER RESIDUAL SPREAD: Model 4 shows a more circular, random scatter pattern around zero without the systematic fan pattern present in Model 3.
+
+# Does the improvement justify using log(SalePrice)?
+# YES. Despite both models showing some skewness, the improvement in model fit justifies the use of the log-transformed response variable. The log transformation successfully addresses the severe heteroscedasticity problem in Model 3, which is a more critical violation than mild skewness. The constant variance achieved in Model 4 results in more reliable coefficient estimates and valid prediction intervals. Additionally, the log transformation provides practical interpretation benefits: coefficients represent percentage changes in price, which is more meaningful across different price ranges.\n")
+
+# ====================================================== #
+### Assignment Task 5
+# Identify influential points, high leverage, and outliers for Model 4
+```{r}
+# Influence diagnostics
+leverage4 <- hatvalues(model4)
+cooks_d4 <- cooks.distance(model4)
+dffits_val4 <- dffits(model4)
+
+# Identify influential points
+n <- nrow(ames_data_clean)
+p <- length(coef(model4))
+
+cat("High leverage points (h > 2*p/n):", sum(leverage4 > 2*p/n), "\n")
+cat("High Cook's D points (D > 4/n):", sum(cooks_d4 > 4/n), "\n")
+cat("High DFFITS points (|DFFITS| > 2*sqrt(p/n)):", sum(abs(dffits_val4) > 2*sqrt(p/n)), "\n\n")
+```
+
+```{r}
+# Identify observations to remove (using Cook's D as primary criterion)
+influential4 <- which(cooks_d4 > 4/n)
+cat("Number of influential points to remove:", length(influential4), "\n")
+cat("Influential observation indices:", influential4, "\n\n")
+```
+
+```{r}
+# Remove influential points and create new dataset
+ames_data_reduced <- ames_data_clean[-influential4, ]
+cat("Original dataset size:", nrow(ames_data_clean), "\n")
+cat("Reduced dataset size:", nrow(ames_data_reduced), "\n")
+cat("Observations removed:", nrow(ames_data_clean) - nrow(ames_data_reduced), "\n\n")
+```
+
+```{r}
+# Refit Model 4 without influential points
+model4_reduced <- lm(LogSalePrice ~ GrLivArea + OverallQual + TotalBsmtSF, data = ames_data_reduced)
+summary(model4_reduced)
+cat("log(SalePrice) =", round(coef(model4_reduced)[1], 6), "+", 
+    round(coef(model4_reduced)[2], 6), "* Living Area +", 
+    round(coef(model4_reduced)[3], 6), "* Overall Quality +",
+    round(coef(model4_reduced)[4], 6), "* Basement Square Footage\n\n")
+```
+
+```{r}
+# Compare models
+cat("Model 4 (Original) R-squared:", round(summary(model4)$r.squared, 4), "\n")
+cat("Model 4 (Reduced) R-squared:", round(summary(model4_reduced)$r.squared, 4), "\n")
+cat("Improvement:", 100 * round(summary(model4_reduced)$r.squared - summary(model4)$r.squared, 4), "%\n\n")
+
+cat("Model 4 (Original) Adjusted R-squared:", round(summary(model4)$adj.r.squared, 4), "\n")
+cat("Model 4 (Reduced) Adjusted R-squared:", round(summary(model4_reduced)$adj.r.squared, 4), "\n")
+cat("Improvement:", 100* round(summary(model4_reduced)$adj.r.squared - summary(model4)$adj.r.squared, 4), "%\n\n")
+
+cat("Model 4 (Original) Residual Std Error:", round(summary(model4)$sigma, 4), "\n")
+cat("Model 4 (Reduced) Residual Std Error:", round(summary(model4_reduced)$sigma, 4), "\n")
+cat("Improvement:", 100 * round(summary(model4)$sigma - summary(model4_reduced)$sigma, 4), "%\n\n")
+```
+
+```{r}
+# Visual comparison
+y_hat4_reduced <- fitted(model4_reduced)
+std_resid4_reduced <- rstandard(model4_reduced)
+
+par(mfrow = c(2, 2))
+hist(std_resid4, main = "Model 4 Original: Residuals", xlab = "Standardized Residuals", col = "lightblue")
+hist(std_resid4_reduced, main = "Model 4 Reduced: Residuals", xlab = "Standardized Residuals", col = "lightgreen")
+plot(y_hat4, std_resid4, xlab = "Fitted Values", ylab = "Std Residuals", 
+     main = "Model 4 Original: Residuals vs Fitted", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+plot(y_hat4_reduced, std_resid4_reduced, xlab = "Fitted Values", ylab = "Std Residuals", 
+     main = "Model 4 Reduced: Residuals vs Fitted", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Discussion: Did the model improve?
+cat("YES. Removing", length(influential4), "influential points improved the model fit but decreased explainability:\n\n")
+
+cat("STATISTICAL CHANGES:\n")
+cat("- R-squared increased from", round(summary(model4)$r.squared, 4), "to", round(summary(model4_reduced)$r.squared, 4), "\n")
+cat("- Residual standard error decreased from", round(summary(model4)$sigma, 4), "to", round(summary(model4_reduced)$sigma, 4), "\n\n")
+```
+
+# VISUAL IMPROVEMENTS:
+# - NORMALITY: The histogram for the reduced model (top right, green) shows a more symmetric, bell-shaped distribution compared to the original (top left, blue) which had left skewness. The reduced model's residuals are more normally distributed.
+
+# - REDUCED EXTREME OUTLIERS: The original model (bottom left) has several extreme outliers, particularly in the negative direction (residuals below -4 and extending to -6). The reduced model (bottom right) has fewer extreme values, with most residuals contained within ±3 standard deviations.
+
+# - TIGHTER RESIDUAL SPREAD: The reduced model shows a more compact scatter pattern, indicating more precise predictions overall.
+
+# Does the improvement justify removing data points?
+
+# NO. While the statistical fit improved, removing influential points is NOT justified in this case:
+
+# 1. LOSS OF GENERALIZABILITY: We removed 125 observations (~6 % of data). The reduced model only predicts well for 'typical' homes and fails to capture the full range of the housing market, including luxury homes and unique properties.
+
+# 2. LEGITIMATE DATA POINTS: These influential points likely represent real homes with unusual but valid combinations of features (e.g., large homes, homes with oversized garages, or undervalued properties). Removing them biases the model toward average properties and ignores legitimate market segments.
+
+# 3. PRACTICAL LIMITATIONS: If the model will be used for prediction, it cannot reliably predict prices for homes similar to those removed. This severely limits its practical utility for real estate applications where unusual properties are common.
+
+# 4. ETHICAL CONCERNS: Selectively removing data to improve fit statistics is a form of p-hacking or result manipulation. It creates an artificially optimistic view of model performance that won't hold when applied to new data containing similar unusual properties.
+
+# RECOMMENDATION: Retain the original Model 4 with all data points. The influential observations provide valuable information about the full housing market. If predictions for unusual homes are unreliable, this should be acknowledged as a model limitation rather than hidden by removing the data.
+
+# ====================================================== #
+### Assignment Task 6: Building a Comprehensive Multiple Regression Model
+
+## STEP 1: START WITH HIGHEST CORRELATION
+# I will begin with GrLivArea (r=0.7710), the variable with the strongest correlation to SalePrice.
+
+# STEP 2: FORWARD SELECTION USING CHANGE IN R-SQUARED
+# I will iteratively add variables that:
+# - Have correlation > 0.3 with SalePrice (meaningful relationship)
+# - Are not highly correlated with existing predictors (avoid multicollinearity, threshold < 0.7
+# - Provide meaningful R-squared improvement (at least 0.01 or 1%)
+# - Have statistically significant coefficients (p < 0.05)
+
+# STEP 3: AVOID REDUNDANT VARIABLES
+# Exclude variables that measure similar concepts:
+# - FirstFlrSF is redundant with GrLivArea and TotalBsmtSF
+# - TotRmsAbvGrd is redundant with GrLivArea
+# - GarageYrBlt is redundant with YearBuilt
+
+# STEP 4: STOP WHEN DIMINISHING RETURNS
+# Stop adding variables when R-squared improvement becomes minimal (<0.005 or 0.5%).
+
+# Build the model iteratively
+```{r}
+# Start with base model
+model_base <- lm(SalePrice ~ GrLivArea, data = ames_data_clean)
+cat("Base Model: SalePrice ~ GrLivArea\n")
+cat("R-squared:", round(summary(model_base)$r.squared, 4), "\n\n")
+```
+
+```{r}
+# Add OverallQual
+model_step2 <- lm(SalePrice ~ GrLivArea + OverallQual, data = ames_data_clean)
+cat("Step 2: + OverallQual\n")
+cat("R-squared:", round(summary(model_step2)$r.squared, 4), 
+    "| Improvement:", 100*round(summary(model_step2)$r.squared - summary(model_base)$r.squared, 4), "%\n\n")
+```
+
+```{r}
+# Add TotalBsmtSF
+model_step3 <- lm(SalePrice ~ GrLivArea + OverallQual + TotalBsmtSF, data = ames_data_clean)
+cat("Step 3: + TotalBsmtSF\n")
+cat("R-squared:", round(summary(model_step3)$r.squared, 4), 
+    "| Improvement:", 100 * round(summary(model_step3)$r.squared - summary(model_step2)$r.squared, 4), "%\n\n")
+```
+
+```{r}
+# Add GarageArea
+model_step4 <- lm(SalePrice ~ GrLivArea + OverallQual + TotalBsmtSF + GarageArea, data = ames_data_clean)
+cat("Step 4: + GarageArea\n")
+cat("R-squared:", round(summary(model_step4)$r.squared, 4), 
+    "| Improvement:", 100 * round(summary(model_step4)$r.squared - summary(model_step3)$r.squared, 4), "%\n\n")
+```
+
+```{r}
+# Add YearBuilt
+model_step5 <- lm(SalePrice ~ GrLivArea + OverallQual + TotalBsmtSF + GarageArea + YearBuilt, data = ames_data_clean)
+cat("Step 5: + YearBuilt\n")
+cat("R-squared:", round(summary(model_step5)$r.squared, 4), 
+    "| Improvement:", 100 * round(summary(model_step5)$r.squared - summary(model_step4)$r.squared, 4), "%\n\n")
+```
+
+```{r}
+# Final model
+model_final <- model_step5
+cat("FINAL MODEL SELECTED: SalePrice ~ GrLivArea + OverallQual + TotalBsmtSF + GarageArea + YearBuilt\n\n")
+```
+
+```{r}
+# b. REPORT THE MODEL AND INTERPRET COEFFICIENTS
+summary(model_final)
+
+cat("SalePrice =", round(coef(model_final)[1], 2), "+", 
+    round(coef(model_final)[2], 2), "* GrLivArea +", 
+    round(coef(model_final)[3], 2), "* OverallQual +",
+    round(coef(model_final)[4], 2), "* TotalBsmtSF +",
+    round(coef(model_final)[5], 2), "* GarageArea +",
+    round(coef(model_final)[6], 2), "* YearBuilt\n\n")
+
+cat("Intercept:", round(coef(model_final)[1], 2), "\n")
+# The predicted SalePrice when all predictors equal zero. Not practically meaningful.
+
+cat("GrLivArea:", round(coef(model_final)[2], 2), "\n")
+cat("  For each additional square foot of living area, SalePrice increases by $", 
+    round(coef(model_final)[2], 2), ", holding all other variables constant.\n\n")
+
+cat("OverallQual:", round(coef(model_final)[3], 2), "\n")
+cat("  For each additional quality point, SalePrice increases by $", 
+    round(coef(model_final)[3], 2), ", holding all other variables constant.\n\n")
+
+cat("TotalBsmtSF:", round(coef(model_final)[4], 2), "\n")
+cat("  For each additional square foot of basement, SalePrice increases by $", 
+    round(coef(model_final)[4], 2), ", holding all other variables constant.\n\n")
+
+cat("GarageArea:", round(coef(model_final)[5], 2), "\n")
+cat("  For each additional square foot of garage, SalePrice increases by $", 
+    round(coef(model_final)[5], 2), ", holding all other variables constant.\n\n")
+
+cat("YearBuilt:", round(coef(model_final)[6], 2), "\n")
+cat("  For each year newer the home is, SalePrice increases by $", 
+    round(coef(model_final)[6], 2), ", holding all other variables constant.\n\n")
+```
+
+```{r}
+# c. COEFFICIENT AND ANOVA TABLES
+kable(summary(model_final)$coefficients)
+
+kable(anova(model_final))
+```
+
+```{r}
+# d. GOODNESS OF FIT
+cat("R-squared:", round(summary(model_final)$r.squared, 4), "\n")
+cat("  ", round(summary(model_final)$r.squared * 100, 2), 
+    "% of variation in SalePrice is explained by the model.\n\n")
+
+cat("Adjusted R-squared:", round(summary(model_final)$adj.r.squared, 4), "\n")
+# Adjusted for the number of predictors in the model.
+
+cat("Residual Standard Error:", round(summary(model_final)$sigma, 2), "\n")
+cat("  Average prediction error is approximately $", round(summary(model_final)$sigma, 2), "\n\n")
+
+cat("F-statistic:", round(summary(model_final)$fstatistic[1], 2), 
+    "with p-value < 0.001\n")
+cat("  The model is statistically significant overall.\n\n")
+```
+
+```{r}
+# e. CHECK UNDERLYING MODEL ASSUMPTIONS
+y_hat_final <- fitted(model_final)
+std_resid_final <- rstandard(model_final)
+
+# Histogram of residuals
+hist(std_resid_final, main = "Histogram of Standardized Residuals (Final Model)", 
+     xlab = "Standardized Residuals", col = "lightblue")
+
+# Residuals vs Fitted
+plot(y_hat_final, std_resid_final, 
+     xlab = "Fitted Values", ylab = "Standardized Residuals",
+     main = "Residuals vs Fitted Values (Final Model)", pch = 20, col = "blue")
+abline(h = 0, col = "red", lwd = 2)
+```
+
+# NORMALITY: The histogram shows right skewness with most residuals between -2 and +2. There is mild deviation from normality with a long right tail.
+
+# CONSTANT VARIANCE: The residuals vs fitted plot shows a funnel pattern with variance increasing at higher fitted values. This indicates heteroscedasticity, violating the constant variance assumption.
+
+# LINEARITY: The residuals are centered around zero across the range of fitted values, suggesting the linear relationship assumption is reasonable.
+
+# INDEPENDENCE: Assuming observations are independent home sales (no repeated measures).
+
+# CONCLUSION: The model shows good explanatory power (R-squared = 0.8127) but violates the constant variance assumption. A log transformation of SalePrice would likely improve model fit by stabilizing variance.
+
+```{r}
+library(car)
+
+cat("Variance Inflation Factors:\n\n")
+vif_values <- vif(model_final)
+print(vif_values)
+
+# Create formatted table
+vif_df <- data.frame(
+  Variable = names(vif_values),
+  VIF = round(vif_values, 2)
+)
+
+knitr::kable(vif_df, 
+             caption = "Table 7.3: Variance Inflation Factors for Final Model",
+             align = c('l', 'r'))
+
+# Interpretation
+cat("\n")
+if(all(vif_values < 5)) {
+  cat("All VIF values are below 5, indicating no significant multicollinearity concerns.\n")
+} else if(all(vif_values < 10)) {
+  cat("All VIF values are below 10, indicating acceptable levels of multicollinearity.\n")
+} else {
+  cat("Some VIF values exceed 10, indicating potential multicollinearity issues.\n")
+}
+
+```

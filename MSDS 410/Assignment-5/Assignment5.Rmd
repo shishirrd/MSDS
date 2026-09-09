@@ -1,0 +1,380 @@
+---
+Title: Assignment 5
+Author: Shishir Deshpande
+Date: Feb 8, 2026
+---
+
+```{r}
+library(tidyverse)
+library(moments)
+library(dplyr)
+library(knitr)
+```
+
+# 1. Obtain descriptive statistics (n, mean, s, and any others you want) for Y by the PriorSmoke variable.  Use the PriorSmoke variable as a factor in an ANOVA to test for mean differences in Cholesterol between PriorSmoke groups.   Report and interpret these results.
+```{r}
+## Importing the data
+data <- read.csv("NutritionStudy.csv")
+```
+
+```{r}
+## Number of rows and columns
+cat("Number of rows:", nrow(data), "\n")
+cat("Number of columns:", ncol(data), "\n")
+
+kable(summary(data))
+```
+
+```{r}
+## Descriptive statistics by PriorSmoke as a factor
+desc_stats <- data %>%
+  group_by(as.factor(data$PriorSmoke)) %>%
+  summarise(
+    n = n(),
+    mean = mean(Cholesterol, na.rm = TRUE),
+    sd = sd(Cholesterol, na.rm = TRUE),
+    median = median(Cholesterol, na.rm = TRUE),
+    min = min(Cholesterol, na.rm = TRUE),
+    max = max(Cholesterol, na.rm = TRUE)
+  )
+kable(desc_stats)
+```
+
+```{r}
+## ANOVA test
+anova_model <- aov(Cholesterol ~ as.factor(data$PriorSmoke), data = data)
+summary(anova_model)
+```
+
+# 2.	Fit a linear regression model that uses the dummy coded variables for PRIORSMOKE to predict Cholesterol (Y).   Call this Model 1.   Remember:  you need to leave one of the dummy coded variables out of the equation.  That category becomes the “basis of interpretation.”  Report the prediction equation and interpret each coefficient in the context of this problem.  Report the coefficient and ANOVA tables from this regression model. 
+```{r}
+## Creating dummy variables (leaving PriorSmoke=1 as reference)
+data$PriorSmoke2 <- ifelse(data$PriorSmoke == 2, 1, 0)
+data$PriorSmoke3 <- ifelse(data$PriorSmoke == 3, 1, 0)
+
+## Model 1: Linear regression with dummy variables
+model1 <- lm(Cholesterol ~ PriorSmoke2 + PriorSmoke3, data = data)
+
+## Coefficient table
+kable(summary(model1)$coefficients)
+
+## ANOVA table
+kable(anova(model1))
+
+## Full summary for prediction equation
+summary(model1)
+```
+
+# Discuss how the results from the regression model compare and contrast to the results from the ANOVA model in Task 1. (in word doc)
+
+# 3.	Model 1 illustrates the ANOVA model as a Linear Regression Model.  Let’s go a step further.   Start with Model 1 and add in the continuous variable FAT.  In other words, you are using FAT and PRIORSMOKE to predict Cholesterol, but you are using dummy coded variables for the PRIORSMOKE categorical variable. More specifically, fit a multiple linear model that uses the FAT continuous variable and the PRIORSMOKE dummy coded variables to predict the response variable CHOLESTEROL (Y).   Remember to leave one of the dummy coded variables out of the model so that you have a basis of interpretation for the constant term.  Report the prediction model, interpret the coefficients, discuss hypothesis test results, goodness of fit statistics, diagnostic graphs, and leverage, influence and Outlier statistics, if it is relevant.  This is called an Analysis of Covariance Model (ANCOVA).  Call this Model 2.
+
+## Using FAT and PRIORSMOKE to predict Cholesterol but you are using dummy coded variables for the PRIORSMOKE categorical variable
+```{r}
+## Model 2: Linear regression with dummy variables
+model2 <- lm(Cholesterol ~ PriorSmoke2 + PriorSmoke3 + Fat, data = data)
+
+## Coefficient table
+kable(summary(model2)$coefficients, caption = "Model 2 ANOVA Table")
+
+## ANOVA table
+kable(anova(model2))
+
+## Full summary for prediction equation
+summary(model2)
+
+## Diagnostic plots
+par(mfrow = c(2, 2))
+plot(model2)
+
+## Leverage, influence, and outlier statistics
+# Leverage (hat values)
+leverage <- hatvalues(model2)
+kable(data.frame(Observation = which(leverage > 2*mean(leverage)), Leverage = leverage[leverage > 2*mean(leverage)]), caption = "High Leverage Points")
+
+# Cook's Distance (influence)
+cooks <- cooks.distance(model2)
+kable(data.frame(Observation = which(cooks > 4/nrow(data)), CooksD = cooks[cooks > 4/nrow(data)]), caption = "Influential Points")
+
+# Standardized residuals (outliers)
+std_resid <- rstandard(model2)
+kable(data.frame(Observation = which(abs(std_resid) > 2), StdResidual = std_resid[abs(std_resid) > 2]), caption = "Potential Outliers")
+```
+
+# 4.	Use the ANCOVA Model 2 from Task 3) to obtain predicted values for CHOLESTEROL(Y).   Now, make a scatterplot of the Predicted Values for Y (y-axis) by FAT (X), but color code the records for the different groups of PRIORSMOKE.  What do you notice about the patterns in the predicted values of Y?   Make a second scatterplot of the actual values of CHOLESTEROL(Y) by FAT (X), but color code the data points by the different groups of the PRIORSMOKE variable.  If you compare the two scatterplots, does the ANCOVA model appear to fit the observed data very well?   Or, is a more complex model needed?
+```{r}
+## Obtain predicted values from Model 2
+data$predicted_cholesterol <- predict(model2)
+
+## Scatterplot 1: Predicted Cholesterol vs Fat (color by PriorSmoke)
+plot(data$Fat, data$predicted_cholesterol, col = data$PriorSmoke, pch = 19,
+     xlab = "Fat", ylab = "Predicted Cholesterol",
+     main = "Predicted Cholesterol vs Fat by PriorSmoke Group")
+legend("topright", legend = c("PriorSmoke 1", "PriorSmoke 2", "PriorSmoke 3"), col = 1:3, pch = 19)
+
+## Scatterplot 2: Actual Cholesterol vs Fat (color by PriorSmoke)
+plot(data$Fat, data$Cholesterol, col = data$PriorSmoke, pch = 19,
+     xlab = "Fat", ylab = "Actual Cholesterol",
+     main = "Actual Cholesterol vs Fat by PriorSmoke Group")
+legend("topright", legend = c("PriorSmoke 1", "PriorSmoke 2", "PriorSmoke 3"), col = 1:3, pch = 19)
+
+```
+
+# The ANCOVA model (Model 2) shows moderate fit but suggests a more complex model may be needed. Here's why:
+
+# Predicted values (left plot): Show three parallel lines with the same slope for Fat across all PriorSmoke groups - this is the assumption of the ANCOVA model (parallel slopes, different intercepts).
+
+# Actual values (right plot): Show considerable scatter around the relationship, suggesting that the relationship between Fat and Cholesterol may not be perfectly linear. There's substantial variability not captured by the model. The slopes for different PriorSmoke groups may not actually be parallel (interaction effect possible)
+
+# Conclusion: A more complex model may be needed, such as adding an interaction term between Fat and PriorSmoke (allowing different slopes for each group), including additional predictor variables, and considering non-linear relationships.
+
+# The current ANCOVA model assumes parallel slopes, but the actual data suggests the relationship between Fat and Cholesterol might differ across PriorSmoke groups, indicating that an interaction model could provide better fit.
+
+# 5.	Create new product variables by multiplying each of the dummy coded variables for PRIORSMOKE by the continuous FAT(X) variable.  Name and save these product variables to your dataset.   Now, to build the Unequal Slopes Model, start with the ANCOVA model, Model 2, from Task 3).  Add in the interaction variables you just created.  You now should have a multiple regression model with the predictor variables of:   FAT, two dummy coded PRIORSMOKE variables, and two product variables.   This is called an Unequal Slopes Model – call it Model 3.   Fit Model 3 and report the prediction equation, interpret the coefficients, discuss hypothesis test results, goodness of fit statistics, diagnostic graphs, leverage, influence, and Outlier statistics, if warranted.
+
+```{r}
+## Create interaction/product variables
+data$Fat_PriorSmoke2 <- data$Fat * data$PriorSmoke2
+data$Fat_PriorSmoke3 <- data$Fat * data$PriorSmoke3
+
+## Model 3: Unequal Slopes Model with interactions
+model3 <- lm(Cholesterol ~ Fat + PriorSmoke2 + PriorSmoke3 + Fat_PriorSmoke2 + Fat_PriorSmoke3, data = data)
+
+## Coefficient table
+kable(summary(model3)$coefficients, caption = "Model 3 Coefficients")
+
+## ANOVA table
+kable(anova(model3), caption = "Model 3 ANOVA Table")
+
+## Full summary
+summary(model3)
+
+## Diagnostic plots
+par(mfrow = c(2, 2))
+plot(model3)
+
+## Leverage statistics
+leverage3 <- hatvalues(model3)
+kable(data.frame(Observation = which(leverage3 > 2*mean(leverage3)), 
+                 Leverage = leverage3[leverage3 > 2*mean(leverage3)]), 
+      caption = "High Leverage Points - Model 3")
+
+## Cook's Distance
+cooks3 <- cooks.distance(model3)
+kable(data.frame(Observation = which(cooks3 > 4/nrow(data)), 
+                 CooksD = cooks3[cooks3 > 4/nrow(data)]), 
+      caption = "Influential Points - Model 3")
+
+## Standardized residuals
+std_resid3 <- rstandard(model3)
+kable(data.frame(Observation = which(abs(std_resid3) > 2), 
+                 StdResidual = std_resid3[abs(std_resid3) > 2]), 
+      caption = "Potential Outliers - Model 3")
+```
+
+# 6.	Use Model 3 to obtain predicted values.   Plot the predicted values for CHOLESTEROL (Y) by FAT(X).  Discuss what you see in this graph.  
+```{r}
+## Model 3 predictions
+data$predicted_cholesterol_model3 <- predict(model3)
+
+## Plotting predicted CHOLESTEROL (Y) values by FAT (X), color-coded by PriorSmoke
+plot(data$Fat, data$predicted_cholesterol_model3, col = data$PriorSmoke, pch = 19,
+     xlab = "Fat", ylab = "Predicted Cholesterol (Model 3)",
+     main = "Model 3: Predicted Cholesterol vs Fat by PriorSmoke Group")
+legend("topright", legend = c("PriorSmoke 1", "PriorSmoke 2", "PriorSmoke 3"), col = 1:3, pch = 19)
+```
+
+# 7.	You should be aware that Model 2 and Model 3 are nested.  Which model is the full and which one is the reduced model?   Write out the null and alternative hypotheses for the nested F-test to determine if the slopes are unequal.  Use the ANOVA tables from Models 2 and 3 you fit previously to compute the F-statistic for a nested F-test using Full and Reduced models.  Conduct and interpret the nested hypothesis test.  Are there unequal slopes in this situation?   Discuss the findings.
+
+```{r}
+##  To answer the first question, Model 2 is the reduced model and Model 3 is the full model. Model 2 predicts Cholesterol using Fat, PriorSmoke Factor 2, and PriorSmoke Factor 3. 
+
+## Model 3 predicts Cholesterol with all these predictors and two interaction terms, Fat+PriorSmoke Factor 2, and Fat+PriorSmoke Factor 3. 
+
+## Moving to the hypothesis testing, the Null Hypothesis (H0) will state that the slopes of are equal to zero (and each other)
+
+## Nested F-test
+kable(anova(model2, model3))
+```
+
+# 8.	Now that you’ve been exposed to these modeling techniques, it is time for you to use them in practice.   Let’s examine more of the NutritionStudy data.   Use the above modeling approach to determine if the categorical variables SMOKE, ALCOHOL CONSUMPTION or GENDER, along with the continuous variables FAT variable are predictive of CHOLESTEROL.  Formulate hypotheses, construct essential variables (as necessary), conduct the analysis and report on the results.   Which categorical variables are most predictive of CHOLESTEROL?  
+```{r}
+## Create dummy variables
+data$Smoke_Yes <- ifelse(data$Smoke == "Yes", 1, 0)
+data$Gender_Male <- ifelse(data$Gender == "Male", 1, 0)
+
+## Alcohol categories: None (0), Low (>0 to 5), Moderate (>5 to 15), High (>15)
+data$Alc_Low <- ifelse(data$Alcohol > 0 & data$Alcohol <= 5, 1, 0)
+data$Alc_Mod <- ifelse(data$Alcohol > 5 & data$Alcohol <= 15, 1, 0)
+data$Alc_High <- ifelse(data$Alcohol > 15, 1, 0)
+
+## Hypotheses:
+# H0: β_Smoke = β_Alcohol = β_Gender = 0 (categorical variables not predictive)
+# Ha: At least one β ≠ 0
+
+## Model 4: ANCOVA with Smoke, Alcohol, Gender, and Fat
+model4 <- lm(Cholesterol ~ Fat + Smoke_Yes + Alc_Low + Alc_Mod + Alc_High + Gender_Male, data = data)
+kable(summary(model4)$coefficients, caption = "Model 4: ANCOVA Coefficients")
+kable(anova(model4), caption = "Model 4 ANOVA")
+summary(model4)
+
+par(mfrow = c(2, 2))
+plot(model4)
+```
+
+```{r}
+## Leverage, influence, and outlier statistics for Model 4
+leverage4 <- hatvalues(model4)
+kable(data.frame(Observation = which(leverage4 > 2*mean(leverage4)), 
+                 Leverage = leverage4[leverage4 > 2*mean(leverage4)]), 
+      caption = "High Leverage Points - Model 4")
+
+cooks4 <- cooks.distance(model4)
+kable(data.frame(Observation = which(cooks4 > 4/nrow(data)), 
+                 CooksD = cooks4[cooks4 > 4/nrow(data)]), 
+      caption = "Influential Points - Model 4")
+
+std_resid4 <- rstandard(model4)
+kable(data.frame(Observation = which(abs(std_resid4) > 2), 
+                 StdResidual = std_resid4[abs(std_resid4) > 2]), 
+      caption = "Potential Outliers - Model 4")
+```
+
+```{r}
+## Programmatic hypothesis testing
+alpha <- 0.05
+coef_summary <- summary(model4)$coefficients
+
+cat("\n=== HYPOTHESIS TEST RESULTS (α = 0.05) ===\n")
+if(coef_summary["Smoke_Yes", "Pr(>|t|)"] < alpha) {
+  cat("SMOKE: SIGNIFICANT (p =", round(coef_summary["Smoke_Yes", "Pr(>|t|)"], 4), ")\n")
+} else {
+  cat("SMOKE: NOT SIGNIFICANT (p =", round(coef_summary["Smoke_Yes", "Pr(>|t|)"], 4), ")\n")
+}
+
+if(coef_summary["Gender_Male", "Pr(>|t|)"] < alpha) {
+  cat("GENDER: SIGNIFICANT (p =", round(coef_summary["Gender_Male", "Pr(>|t|)"], 4), ")\n")
+} else {
+  cat("GENDER: NOT SIGNIFICANT (p =", round(coef_summary["Gender_Male", "Pr(>|t|)"], 4), ")\n")
+}
+
+alc_pvals <- coef_summary[c("Alc_Low", "Alc_Mod", "Alc_High"), "Pr(>|t|)"]
+if(any(alc_pvals < alpha)) {
+  cat("ALCOHOL: SIGNIFICANT - At least one level differs\n")
+} else {
+  cat("ALCOHOL: NOT SIGNIFICANT\n")
+}
+```
+
+```{r}
+## Model 5: Unequal Slopes with interactions
+data$Fat_Smoke <- data$Fat * data$Smoke_Yes
+data$Fat_AlcLow <- data$Fat * data$Alc_Low
+data$Fat_AlcMod <- data$Fat * data$Alc_Mod
+data$Fat_AlcHigh <- data$Fat * data$Alc_High
+data$Fat_Gender <- data$Fat * data$Gender_Male
+
+model5 <- lm(Cholesterol ~ Fat + Smoke_Yes + Alc_Low + Alc_Mod + Alc_High + Gender_Male + 
+             Fat_Smoke + Fat_AlcLow + Fat_AlcMod + Fat_AlcHigh + Fat_Gender, data = data)
+kable(summary(model5)$coefficients, caption = "Model 5: Unequal Slopes Coefficients")
+kable(anova(model5), caption = "Model 5 ANOVA")
+summary(model5)
+
+par(mfrow = c(2, 2))
+plot(model5)
+```
+
+```{r}
+## Leverage, influence, and outlier statistics for Model 5
+leverage5 <- hatvalues(model5)
+kable(data.frame(Observation = which(leverage5 > 2*mean(leverage5)), 
+                 Leverage = leverage5[leverage5 > 2*mean(leverage5)]), 
+      caption = "High Leverage Points - Model 5")
+
+cooks5 <- cooks.distance(model5)
+kable(data.frame(Observation = which(cooks5 > 4/nrow(data)), 
+                 CooksD = cooks5[cooks5 > 4/nrow(data)]), 
+      caption = "Influential Points - Model 5")
+
+std_resid5 <- rstandard(model5)
+kable(data.frame(Observation = which(abs(std_resid5) > 2), 
+                 StdResidual = std_resid5[abs(std_resid5) > 2]), 
+      caption = "Potential Outliers - Model 5")
+```
+
+```{r}
+## Model 5 predictions
+data$pred_model5 <- predict(model5)
+plot(data$Fat, data$pred_model5, col = data$Smoke_Yes + 1, pch = 19,
+     xlab = "Fat", ylab = "Predicted Cholesterol (Model 5)",
+     main = "Model 5: Predicted Cholesterol vs Fat by Smoke")
+legend("topright", legend = c("Non-Smoker", "Smoker"), col = 1:2, pch = 19)
+```
+
+```{r}
+## Nested F-test with programmatic decision
+nested_test <- anova(model4, model5)
+kable(nested_test, caption = "Nested F-test: Model 4 vs Model 5")
+f_pval <- nested_test$`Pr(>F)`[2]
+
+cat("\n=== NESTED F-TEST ===\n")
+if(f_pval < alpha) {
+  cat("REJECT H0: Unequal slopes model significantly better (p =", round(f_pval, 4), ")\n")
+} else {
+  cat("FAIL TO REJECT H0: Equal slopes adequate (p =", round(f_pval, 4), ")\n")
+}
+```
+
+```{r}
+## Individual categorical variable models
+model_smoke <- lm(Cholesterol ~ Fat + Smoke_Yes, data = data)
+model_alcohol <- lm(Cholesterol ~ Fat + Alc_Low + Alc_Mod + Alc_High, data = data)
+model_gender <- lm(Cholesterol ~ Fat + Gender_Male, data = data)
+
+r2_vals <- c(Smoke = summary(model_smoke)$r.squared,
+             Alcohol = summary(model_alcohol)$r.squared,
+             Gender = summary(model_gender)$r.squared)
+
+cat("\n=== R² COMPARISONS ===\n")
+cat("Fat + Smoke R²:", round(r2_vals["Smoke"], 4), "\n")
+cat("Fat + Alcohol R²:", round(r2_vals["Alcohol"], 4), "\n")
+cat("Fat + Gender R²:", round(r2_vals["Gender"], 4), "\n")
+cat("All Predictors R²:", round(summary(model4)$r.squared, 4), "\n")
+cat("\nMOST PREDICTIVE:", names(which.max(r2_vals)), "\n")
+```
+
+```{r}
+## Visualization
+data$pred_model4 <- predict(model4)
+par(mfrow = c(2, 2))
+plot(data$Fat, data$pred_model4, col = data$Smoke_Yes + 1, pch = 19,
+     xlab = "Fat", ylab = "Predicted Cholesterol", main = "Predicted by Smoke")
+plot(data$Fat, data$Cholesterol, col = data$Smoke_Yes + 1, pch = 19,
+     xlab = "Fat", ylab = "Actual Cholesterol", main = "Actual by Smoke")
+plot(data$Fat, data$pred_model4, col = data$Gender_Male + 1, pch = 19,
+     xlab = "Fat", ylab = "Predicted Cholesterol", main = "Predicted by Gender")
+plot(data$Fat, data$Cholesterol, col = data$Gender_Male + 1, pch = 19,
+     xlab = "Fat", ylab = "Actual Cholesterol", main = "Actual by Gender")
+```
+
+# 9.	Conclusion (in word doc)
+
+```{r}
+## R-squared analysis for ALL features (original + created dummy variables)
+all_vars <- c("Age", "Quetelet", "Calories", "Fat", "Fiber", "Alcohol", 
+              "BetaDiet", "RetinolDiet", "BetaPlasma", "RetinolPlasma",
+              "PriorSmoke2", "PriorSmoke3", "Smoke_Yes", "Gender_Male",
+              "Alc_Low", "Alc_Mod", "Alc_High")
+
+r2_all <- sapply(all_vars, function(var) {
+  model <- lm(paste("Cholesterol ~", var), data = data)
+  summary(model)$r.squared
+})
+
+r2_all_df <- data.frame(Variable = names(r2_all), R_squared = r2_all)
+r2_all_df <- r2_all_df[order(-r2_all_df$R_squared), ]
+kable(r2_all_df, caption = "R² for All Features (Original + Dummy Variables)")
+
+cat("\nTop 3 predictors:\n")
+print(head(r2_all_df, 3))
+```

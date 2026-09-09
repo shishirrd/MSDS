@@ -1,0 +1,1555 @@
+---
+title: "Assignment 9: Poisson and ZIP Regression Models"
+author: "Shishir Deshpande"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 10, fig.height = 10, fig.align = 'center')
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(gridExtra)
+library(moments)
+library(car)
+library(pROC) # For performance evaluation
+library(pscl)    # For zeroinfl() ZIP/ZINB models
+library(broom)
+```
+
+```{r}
+# Import STRESS data
+stress <- read.csv("STRESS.csv")
+
+str(stress)
+cat("The dataset has", nrow(stress), "rows and", ncol(stress), "columns.")
+
+# Create a clean transposed summary
+summary_data <- summary(stress)
+
+# Convert to a data frame and clean it up
+summary_clean <- data.frame(
+  Variable = names(stress),
+  Minimum = sapply(stress, function(x) if(is.numeric(x)) min(x, na.rm = TRUE) else NA),
+  Quartile1 = sapply(stress, function(x) if(is.numeric(x)) quantile(x, 0.25, na.rm = TRUE) else NA),
+  StandardDeviation = sapply(stress[sapply(stress, is.numeric)], sd, na.rm = TRUE),
+  Median = sapply(stress, function(x) if(is.numeric(x)) median(x, na.rm = TRUE) else NA),
+  Mean = sapply(stress, function(x) if(is.numeric(x)) mean(x, na.rm = TRUE) else NA),
+  Quartile3 = sapply(stress, function(x) if(is.numeric(x)) quantile(x, 0.75, na.rm = TRUE) else NA),
+  Maximum = sapply(stress, function(x) if(is.numeric(x)) max(x, na.rm = TRUE) else NA)
+)
+
+kable(summary_clean, row.names = FALSE, digits = 2)
+
+```
+
+```{r}
+## Checking for missing values
+print(colSums(is.na(stress)))
+
+```
+
+```{r}
+# Histogram with normal curve overlay
+par(mfrow = c(2, 2))
+
+# Histogram
+hist(stress$STRESS, 
+     breaks = 30,
+     main = "Distribution of Stressful Events (STRESS)",
+     xlab = "Number of Stressful Events",
+     col = "lightblue",
+     probability = TRUE)
+curve(dnorm(x, mean = mean(stress$STRESS), sd = sd(stress$STRESS)), 
+      add = TRUE, col = "red", lwd = 2)
+legend("topright", legend = "Normal curve", col = "red", lwd = 2)
+
+# Q-Q plot
+qqnorm(stress$STRESS, main = "Q-Q Plot for STRESS")
+qqline(stress$STRESS, col = "red", lwd = 2)
+
+# Box plot
+boxplot(stress$STRESS, 
+        main = "Boxplot of STRESS",
+        ylab = "Number of Stressful Events",
+        col = "lightgreen")
+
+# Bar plot (since it's count data)
+barplot(table(stress$STRESS),
+        main = "Frequency of Stress Counts",
+        xlab = "Number of Stressful Events",
+        ylab = "Frequency",
+        col = "lightcoral")
+
+par(mfrow = c(1, 1))
+
+```
+
+```{r}
+# Test for normality
+shapiro_test <- shapiro.test(stress$STRESS)
+print(paste("Shapiro-Wilk test p-value:", round(shapiro_test$p.value, 6)))
+print(paste("Shapiro-Wilk W statistic:", round(shapiro_test$statistic, 4)))
+
+```
+
+### Task 1: Interpretation and Distribution Assessment of STRESS Variable
+
+The STRESS variable (n=`r nrow(stress)`) represents count data measuring the number of stressful life events experienced by adolescents in the past year.
+
+**Evidence Against Normality:**
+
+- Shapiro-Wilk test: W = `r round(shapiro.test(stress$STRESS)$statistic, 4)`, p < 0.001 (strongly rejects normality)
+- Q-Q plot shows severe deviation from the theoretical normal line, especially in the tails
+- The distribution is heavily right-skewed with a long tail
+- Approximately `r sum(stress$STRESS == 0)` observations (`r round(100 * mean(stress$STRESS == 0), 1)`%) are zeros, indicating a substantial proportion of adolescents reported no stressful events
+
+**Poisson vs. Overdispersion Assessment:**
+Mean = `r round(mean(stress$STRESS), 2)` stressful events
+Variance = `r round(var(stress$STRESS), 2)` (SD² `r round(sd(stress$STRESS), 2)`²)
+Variance/Mean ratio = `r round(var(stress$STRESS) / mean(stress$STRESS), 2)`, suggesting overdispersion (variance exceeds mean)
+In a true Poisson distribution, mean = variance. Here, variance is nearly `r round(var(stress$STRESS) / mean(stress$STRESS), 1)`× the mean, indicating overdispersion
+
+Most Likely Distribution:
+Based on the evidence, STRESS follows a count distribution with overdispersion and excess zeros. Candidate models include:
+
+- Overdispersed Poisson (quasi-Poisson or Negative Binomial)
+- Zero-Inflated Poisson (ZIP) due to the high proportion of zeros
+
+The excess zeros suggest there may be two underlying processes: (1) factors determining whether stress occurs at all, and (2) factors determining the count of stressful events given that stress is present. This supports the use of ZIP models in later analyses.
+
+**Analyst Decisions and Their Implications:**
+
+It is worth acknowledging upfront that several analyst decisions made during this exploratory phase will condition all downstream modeling results. The choice of distributional assumption (Poisson vs. Negative Binomial vs. ZIP) is not determined by the data alone — it reflects a judgment call based on the evidence above combined with theoretical reasoning about the data-generating process. Similarly, the decision not to apply any waterfall drop conditions or outlier removal here means all `r nrow(stress)` records are retained, which itself defines the population being modeled: adolescents surveyed about stressful life events in this study, with no restriction on STRESS values. Any conclusions drawn later will be conditioned on these decisions.
+
+
+```{r}
+# Task 2: Fit OLS regression (we expect this to fail)
+# This demonstrates why OLS is inappropriate for count data
+
+ols_model <- lm(STRESS ~ COHES + ESTEEM + GRADES + SATTACH, data = stress)
+
+# Summary with confidence intervals
+summary(ols_model)
+confint(ols_model)
+
+```
+
+```{r}
+# Comprehensive model statistics
+ols_summary <- data.frame(
+  Metric = c("n", "R-squared", "Adj R-squared", "F-statistic", 
+             "Residual Std Error", "AIC", "BIC"),
+  Value = c(
+    nobs(ols_model),
+    round(summary(ols_model)$r.squared, 4),
+    round(summary(ols_model)$adj.r.squared, 4),
+    round(summary(ols_model)$fstatistic[1], 2),
+    round(summary(ols_model)$sigma, 4),
+    round(AIC(ols_model), 2),
+    round(BIC(ols_model), 2)
+  )
+)
+print(ols_summary)
+
+# Coefficient table
+tidy(ols_model, conf.int = TRUE) %>%
+  kable(digits = 4, caption = "OLS Regression Coefficients (n=651)")
+
+# Model fit statistics
+glance(ols_model) %>%
+  kable(digits = 4, caption = "OLS Model Fit Summary")
+
+```
+
+```{r}
+# Get predictions
+stress$ols_pred <- predict(ols_model)
+stress$ols_resid <- residuals(ols_model)
+
+# Diagnostic plots
+par(mfrow = c(2, 3))
+
+# 1. Residuals vs Fitted
+plot(stress$ols_pred, stress$ols_resid,
+     main = "Residuals vs Fitted Values",
+     xlab = "Fitted Values", ylab = "Residuals",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+abline(h = 0, col = "red", lwd = 2)
+lines(lowess(stress$ols_pred, stress$ols_resid), col = "blue", lwd = 2)
+
+# 2. Q-Q plot of residuals
+qqnorm(stress$ols_resid, main = "Q-Q Plot of Residuals")
+qqline(stress$ols_resid, col = "red", lwd = 2)
+
+# 3. Scale-Location plot
+plot(stress$ols_pred, sqrt(abs(rstandard(ols_model))),
+     main = "Scale-Location Plot",
+     xlab = "Fitted Values", ylab = "√|Standardized Residuals|",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+lines(lowess(stress$ols_pred, sqrt(abs(rstandard(ols_model)))), 
+      col = "red", lwd = 2)
+
+# 4. Histogram of predictions (KEY ISSUE!)
+hist(stress$ols_pred, 
+     breaks = 30,
+     main = "Histogram of OLS Predicted Values",
+     xlab = "Predicted STRESS",
+     col = "lightblue",
+     xlim = c(min(stress$ols_pred), max(stress$ols_pred)))
+abline(v = 0, col = "red", lwd = 2, lty = 2)
+text(min(stress$ols_pred), max(hist(stress$ols_pred, plot=FALSE)$counts) * 0.9,
+     paste("Negative predictions:", sum(stress$ols_pred < 0)),
+     pos = 4, col = "red")
+
+# 5. Histogram of residuals
+hist(stress$ols_resid,
+     breaks = 30,
+     main = "Histogram of Residuals",
+     xlab = "Residuals",
+     col = "lightgreen")
+
+# 6. Cook's Distance
+plot(cooks.distance(ols_model),
+     main = "Cook's Distance",
+     ylab = "Cook's Distance",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+abline(h = 4/nobs(ols_model), col = "red", lty = 2)
+
+```
+
+```{r}
+# Key issues to report
+negative_preds <- sum(stress$ols_pred < 0)
+non_integer_preds <- sum(abs(stress$ols_pred - round(stress$ols_pred)) > 0.01)
+pred_range <- range(stress$ols_pred)
+
+cat("\n=== OLS Model Issues ===\n")
+cat("Predictions < 0:", negative_preds, "\n")
+cat("Prediction range:", round(pred_range[1], 3), "to", round(pred_range[2], 3), "\n")
+cat("All predictions are non-integer (continuous)\n")
+cat("Count data requires integer predictions >= 0\n")
+
+# Coefficient interpretation
+cat("\n=== Coefficient Interpretation (with units) ===\n")
+coefs <- summary(ols_model)$coefficients
+for(i in 2:nrow(coefs)) {
+  var_name <- rownames(coefs)[i]
+  estimate <- round(coefs[i, 1], 4)
+  pval <- round(coefs[i, 4], 4)
+  cat(paste0(var_name, ": For a 1-unit increase in ", var_name, 
+             ", the expected number of stressful events changes by ", 
+             estimate, " (p = ", pval, ")\n"))
+}
+
+```
+
+```{r}
+# Create a professional coefficient table
+coef_table <- data.frame(
+  Variable = c("Intercept", "COHES", "ESTEEM", "GRADES", "SATTACH"),
+  Estimate = summary(ols_model)$coefficients[, 1],
+  SE = summary(ols_model)$coefficients[, 2],
+  CI_Lower = confint(ols_model)[, 1],
+  CI_Upper = confint(ols_model)[, 2],
+  t_value = summary(ols_model)$coefficients[, 3],
+  p_value = summary(ols_model)$coefficients[, 4]
+)
+
+# Round for presentation
+coef_table[, 2:7] <- round(coef_table[, 2:7], 4)
+
+print("Table 1: OLS Regression Coefficients (n=651)")
+kable(coef_table)
+```
+
+### Task 2: OLS Regression Model Results
+
+Model Specification:
+We fit an OLS regression model predicting STRESS (number of stressful life events) from family cohesion (COHES), self-esteem (ESTEEM), school grades (GRADES), and school attachment (SATTACH) for n=651 adolescents.
+
+Model Fit:
+
+- R² = `r round(summary(ols_model)$r.squared, 4)`, Adjusted R² = `r round(summary(ols_model)$adj.r.squared, 4)`
+- F(`r summary(ols_model)$fstatistic[2]`, `r summary(ols_model)$fstatistic[3]`) = 14.65, p < 0.001
+- Residual SE = `r round(summary(ols_model)$sigma, 3)`
+- AIC = `r round(AIC(ols_model), 2)`, BIC = `r round(BIC(ols_model), 2)`
+
+The model is statistically significant overall, but explains only `r round(summary(ols_model)$r.squared * 100, 1)`% of variance in stressful events, indicating poor predictive ability.
+
+Coefficient Interpretation (in context):
+
+- COHES (Family Cohesion): `r round(coef(ols_model)["COHES"], 4)` (95% CI: `r round(confint(ols_model)["COHES", 1], 3)`, `r round(confint(ols_model)["COHES", 2], 3)`), p = `r round(summary(ols_model)$coefficients["COHES", 4], 3)`
+  - For each 1-point increase in family cohesion, the expected number of stressful events decreases by `r round(coef(ols_model)["COHES"], 4)` events
+  - Critical evaluation: Is a 1-unit change meaningful? COHES ranges from `r min(stress$COHES)` to `r max(stress$COHES)` (SD=`r round(sd(stress$COHES), 2)`), so a 1-unit change represents only `r round(1/sd(stress$COHES)*100, 0)`% of a standard deviation—a very small change. A more interpretable change would be 10 points (approximately 1 SD), which predicts  `r round(coef(ols_model)["COHES"] * 10, 3)` fewer stressful events.
+- ESTEEM (Self-Esteem): β = `r round(coef(ols_model)["ESTEEM"], 4)` (95% CI: `r round(confint(ols_model)["ESTEEM", 1], 3)`, `r round(confint(ols_model)["ESTEEM", 2], 3)`), p = `r round(summary(ols_model)$coefficients["ESTEEM", 4], 3)`
+  - Each 1-point increase predicts `r abs(round(coef(ols_model)["ESTEEM"], 4))` fewer stressful events
+  - ESTEEM ranges `r min(stress$ESTEEM)` to `r max(stress$ESTEEM)` (SD=`r round(sd(stress$ESTEEM), 2)`); 1 unit ≈ `r round(1/sd(stress$ESTEEM)*100, 0)`% of SD — moderately meaningful
+
+- GRADES: β = `r round(coef(ols_model)["GRADES"], 4)` (95% CI: `r round(confint(ols_model)["GRADES", 1], 3)`, 
+  `r round(confint(ols_model)["GRADES", 2], 3)`), p = `r round(summary(ols_model)$coefficients["GRADES", 4], 3)`
+  - Not statistically significant at α=0.05; 95% CI includes zero
+
+- SATTACH (School Attachment): β = `r round(coef(ols_model)["SATTACH"], 4)` (95% CI: `r round(confint(ols_model)["SATTACH", 1], 3)`, `r round(confint(ols_model)["SATTACH", 2], 3)`), p = `r round(summary(ols_model)$coefficients["SATTACH", 4], 3)`
+  - Each 1-point increase predicts `r abs(round(coef(ols_model)["SATTACH"], 4))` fewer stressful events
+  - SATTACH ranges `r min(stress$SATTACH)` to `r max(stress$SATTACH)` (SD=`r round(sd(stress$SATTACH), 2)`);  1 unit ≈ `r round(1/sd(stress$SATTACH)*100, 0)`% of SD — moderately meaningful
+
+**Critical Issues with OLS for Count Data:**
+
+- Predictions are continuous, not integers: range 
+  `r round(min(stress$ols_pred), 2)` to `r round(max(stress$ols_pred), 2)`, with `r sum(stress$ols_pred < 0)` negative predictions
+- Heteroscedasticity: Scale-Location plot shows increasing variance at higher fitted values, violating the constant variance assumption
+- Non-normality of residuals: Q-Q plot shows severe deviation from normality in both tails
+- Distinct banding in residual plots: horizontal bands corresponding to discrete Y values indicate a continuous model is inappropriate for count data
+
+**Conclusion:** Although statistically significant, the OLS model is theoretically inappropriate for count data and shows poor fit 
+(R²=`r round(summary(ols_model)$r.squared*100, 1)`%). A count-based regression model (Poisson, Negative Binomial, or ZIP) is required.
+
+
+```{r}
+# Task 3: Try log transformation (still wrong, but educational)
+# Add small constant to handle zeros
+stress$log_stress <- log(stress$STRESS + 1)  # log(Y+1) transformation
+
+# Fit model on log-transformed outcome
+log_ols_model <- lm(log_stress ~ COHES + ESTEEM + GRADES + SATTACH, data = stress)
+
+summary(log_ols_model)
+kable(log_ols_model$effects)
+print("Table 2a: Log-OLS Confidence Intervals (n=651)")
+kable(confint(log_ols_model))
+
+```
+
+```{r}
+# Coefficient table
+tidy(log_ols_model, conf.int = TRUE) %>%
+  kable(digits = 4, caption = "Log-OLS Regression Coefficients (n=651)")
+
+# Model fit statistics
+glance(log_ols_model) %>%
+  kable(digits = 4, caption = "Log-OLS Model Fit Summary")
+
+```
+
+```{r}
+# Model comparison table
+log_ols_summary <- data.frame(
+  Metric = c("n", "R-squared", "Adj R-squared", "F-statistic", 
+             "Residual Std Error", "AIC", "BIC"),
+  OLS_Original = c(651, 0.0832, 0.0775, 14.65, 1.776, 2602.24, 2629.11),
+  OLS_Log_Transform = c(
+    nobs(log_ols_model),
+    round(summary(log_ols_model)$r.squared, 4),
+    round(summary(log_ols_model)$adj.r.squared, 4),
+    round(summary(log_ols_model)$fstatistic[1], 2),
+    round(summary(log_ols_model)$sigma, 4),
+    round(AIC(log_ols_model), 2),
+    round(BIC(log_ols_model), 2)
+  )
+)
+print("Table 2b: OLS vs Log-OLS Model Fit Comparison (n=651)")
+kable(log_ols_summary)
+```
+
+```{r}
+# Get predictions on log scale
+stress$log_pred <- predict(log_ols_model)
+stress$log_resid <- residuals(log_ols_model)
+
+# Diagnostic plots
+par(mfrow = c(2, 3))
+
+# 1. Residuals vs Fitted (log scale)
+plot(stress$log_pred, stress$log_resid,
+     main = "Residuals vs Fitted (Log Scale)",
+     xlab = "Fitted log(STRESS+1)", ylab = "Residuals",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+abline(h = 0, col = "red", lwd = 2)
+lines(lowess(stress$log_pred, stress$log_resid), col = "blue", lwd = 2)
+
+# 2. Q-Q plot
+qqnorm(stress$log_resid, main = "Q-Q Plot: Log Model Residuals")
+qqline(stress$log_resid, col = "red", lwd = 2)
+
+# 3. Scale-Location
+plot(stress$log_pred, sqrt(abs(rstandard(log_ols_model))),
+     main = "Scale-Location: Log Model",
+     xlab = "Fitted Values", ylab = "√|Standardized Residuals|",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+lines(lowess(stress$log_pred, sqrt(abs(rstandard(log_ols_model)))), 
+      col = "red", lwd = 2)
+
+# 4. Histogram of predictions on LOG scale
+hist(stress$log_pred, 
+     breaks = 30,
+     main = "Predicted log(STRESS+1)",
+     xlab = "Predicted log(STRESS+1)",
+     col = "lightblue")
+
+# 5. Histogram of predictions BACK-TRANSFORMED
+stress$backtransform_pred <- exp(stress$log_pred) - 1
+hist(stress$backtransform_pred, 
+     breaks = 30,
+     main = "Back-transformed Predictions",
+     xlab = "Predicted STRESS (back-transformed)",
+     col = "lightcoral")
+abline(v = 0, col = "red", lwd = 2, lty = 2)
+
+# 6. Compare actual vs back-transformed predictions
+plot(stress$STRESS, stress$backtransform_pred,
+     main = "Actual vs Back-transformed Predictions",
+     xlab = "Actual STRESS", ylab = "Predicted STRESS",
+     pch = 16, col = rgb(0, 0, 1, 0.2))
+abline(0, 1, col = "red", lwd = 2)
+```
+
+```{r}
+# Key issue: Check for negative back-transformed predictions
+negative_backtrans <- sum(stress$backtransform_pred < 0)
+non_integer_backtrans <- sum(abs(stress$backtransform_pred - round(stress$backtransform_pred)) > 0.01)
+
+cat("\n=== Log-Transformed OLS Issues ===\n")
+cat("Negative back-transformed predictions:", negative_backtrans, "\n")
+cat("Non-integer back-transformed predictions:", non_integer_backtrans, "\n")
+cat("Back-transformed prediction range:", 
+    round(range(stress$backtransform_pred)[1], 3), "to", 
+    round(range(stress$backtransform_pred)[2], 3), "\n")
+```
+
+```{r}
+# Compare residual distributions
+par(mfrow = c(1, 2))
+hist(stress$ols_resid, breaks = 30, main = "Original OLS Residuals",
+     xlab = "Residuals", col = "lightblue")
+hist(stress$log_resid, breaks = 30, main = "Log-OLS Residuals",
+     xlab = "Residuals", col = "lightgreen")
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Shapiro test on both
+cat("\nShapiro-Wilk Tests:\n")
+cat("Original OLS residuals: p =", round(shapiro.test(stress$ols_resid)$p.value, 4), "\n")
+cat("Log-OLS residuals: p =", round(shapiro.test(stress$log_resid)$p.value, 4), "\n")
+```
+
+### Task 3: Log-Transformed OLS Model
+
+Replace lines 412–455 with this:
+markdown### Task 3: Log-Transformed OLS Model
+
+**Note on Transformation:** The assignment specifies LN(Y) as the transformation. However, STRESS contains `r sum(stress$STRESS == 0)` zeros (`r round(100 * mean(stress$STRESS == 0), 1)`%), and LN(0) is undefined. To apply a log transformation within an OLS framework, a small constant of +1 was added, yielding log(STRESS+1). This is a subjective decision that conditions all subsequent results in this task — a different constant (e.g., +0.5) would yield different coefficient estimates and fit statistics. This is acknowledged upfront in the spirit of full transparency.
+
+**Model Results (n=`r nobs(log_ols_model)`):**
+
+- R² = `r round(summary(log_ols_model)$r.squared, 4)`, Adjusted R² = `r round(summary(log_ols_model)$adj.r.squared, 4)`
+- F(`r summary(log_ols_model)$fstatistic[2]`,   `r summary(log_ols_model)$fstatistic[3]`) =   `r round(summary(log_ols_model)$fstatistic[1], 2)`, p < 0.001
+- Residual SE = `r round(summary(log_ols_model)$sigma, 3)`
+- AIC = `r round(AIC(log_ols_model), 2)`, BIC = `r round(BIC(log_ols_model), 2)`
+
+**Coefficient Interpretation (on log scale):**
+
+- COHES: β = `r round(coef(log_ols_model)["COHES"], 4)` (95% CI: `r round(confint(log_ols_model)["COHES", 1], 3)`, `r round(confint(log_ols_model)["COHES", 2], 3)`), p = `r round(summary(log_ols_model)$coefficients["COHES", 4], 3)`
+- ESTEEM: β = `r round(coef(log_ols_model)["ESTEEM"], 4)` (95% CI: `r round(confint(log_ols_model)["ESTEEM", 1], 3)`, `r round(confint(log_ols_model)["ESTEEM", 2], 3)`), p = `r round(summary(log_ols_model)$coefficients["ESTEEM", 4], 3)` (not significant)
+- GRADES: β = `r round(coef(log_ols_model)["GRADES"], 4)` (95% CI: `r round(confint(log_ols_model)["GRADES", 1], 3)`, `r round(confint(log_ols_model)["GRADES", 2], 3)`), p = `r round(summary(log_ols_model)$coefficients["GRADES", 4], 3)` (not significant)
+- SATTACH: β = `r round(coef(log_ols_model)["SATTACH"], 4)` (95% CI: `r round(confint(log_ols_model)["SATTACH", 1], 3)`, `r round(confint(log_ols_model)["SATTACH", 2], 3)`), p = `r round(summary(log_ols_model)$coefficients["SATTACH", 4], 3)`
+
+Note: These coefficients are on the log(STRESS+1) scale. For example, a 1-unit increase in COHES is associated with a multiplicative change of exp(`r round(coef(log_ols_model)["COHES"], 4)`) = `r round(exp(coef(log_ols_model)["COHES"]), 4)`, or approximately a `r abs(round((exp(coef(log_ols_model)["COHES"]) - 1) * 100, 1))`% decrease. Interpretation is inherently difficult for non-technical audiences because the unit 
+of the response is not the original count.
+
+**Histogram of LN(Y)_hat (Log Scale):**
+
+The histogram of predicted log(STRESS+1) values shows a roughly bell-shaped, continuous distribution centered around `r round(mean(stress$log_pred), 2)`–`r round(median(stress$log_pred), 2)`. This looks more well-behaved than the OLS predictions on the raw count scale. However, these are predictions of a transformed, non-count variable — they do not represent stressful event counts directly and cannot be used for count-based decisions without back-transformation.
+
+**Does Log Transformation Fix the Problems?**
+
+Partial improvements:
+
+- Q-Q plot shows better approximation to normality (though still rejected by Shapiro-Wilk, p < 0.001)
+- Residuals vs Fitted shows less severe banding
+- Scale-Location plot shows more stable variance
+- No negative back-transformed predictions (range: 
+  `r round(min(stress$backtransform_pred), 2)` to 
+  `r round(max(stress$backtransform_pred), 2)`)
+
+Critical issues remain:
+
+- Back-transformed predictions are still non-integer: `r sum(abs(stress$backtransform_pred - round(stress$backtransform_pred)) > 0.01)` of `r nrow(stress)` predictions (`r round(100 * mean(abs(stress$backtransform_pred - round(stress$backtransform_pred)) > 0.01), 0)`%) are continuous values, but count data requires integer predictions
+- THE FUNDAMENTAL PROBLEM — Cannot validly back-transform: once a model is fit on a transformed variable, back-transforming invalidates the residual assumptions — the errors are no longer normally distributed, hypothesis tests become invalid, and estimates become biased
+- Back-transformation introduces additional bias via Jensen's inequality
+- Predictive ability declined: R² decreased from 
+  `r round(summary(ols_model)$r.squared * 100, 1)`% to 
+  `r round(summary(log_ols_model)$r.squared * 100, 1)`%
+- AIC/BIC not comparable: models with different response variable scales cannot be directly compared using AIC/BIC
+
+**Conclusion:** Log transformation improves some diagnostic plots but does not solve the fundamental problem of applying a continuous distribution model to discrete count data. The subjective choice to use log(Y+1) rather than LN(Y) itself illustrates how analyst decisions at the data preparation stage condition all downstream results. A count-specific regression model (Poisson family) is both theoretically and practically 
+necessary.
+
+```{r}
+# Task 4: Poisson Regression (FINALLY the right approach!)
+
+# Standard Poisson model
+poisson_model <- glm(STRESS ~ COHES + ESTEEM + GRADES + SATTACH, 
+                     data = stress, 
+                     family = poisson(link = "log"))
+
+# Over-dispersed Poisson (quasi-Poisson)
+quasipoisson_model <- glm(STRESS ~ COHES + ESTEEM + GRADES + SATTACH, 
+                          data = stress, 
+                          family = quasipoisson(link = "log"))
+
+# Get summaries
+summary(poisson_model)
+summary(quasipoisson_model)
+```
+
+```{r}
+# Confidence intervals
+cat("\n=== Poisson Model Confidence Intervals ===\n")
+confint(poisson_model)
+
+cat("\n=== Quasi-Poisson Model Confidence Intervals ===\n")
+confint(quasipoisson_model)
+```
+
+```{r}
+# Create coefficient comparison table
+coef_comparison <- data.frame(
+  Variable = c("Intercept", "COHES", "ESTEEM", "GRADES", "SATTACH"),
+  
+  Poisson_Est = summary(poisson_model)$coefficients[, 1],
+  Poisson_SE = summary(poisson_model)$coefficients[, 2],
+  Poisson_p = summary(poisson_model)$coefficients[, 4],
+  
+  QuasiPoisson_Est = summary(quasipoisson_model)$coefficients[, 1],
+  QuasiPoisson_SE = summary(quasipoisson_model)$coefficients[, 2],
+  QuasiPoisson_p = summary(quasipoisson_model)$coefficients[, 4]
+)
+
+coef_comparison[, 2:7] <- round(coef_comparison[, 2:7], 4)
+print("Table 3: Poisson vs Quasi-Poisson Coefficients (n=651)")
+kable(coef_comparison)
+
+```
+
+```{r}
+# Check dispersion parameter
+dispersion <- summary(quasipoisson_model)$dispersion
+cat("\nDispersion parameter (Quasi-Poisson):", round(dispersion, 4))
+cat("\nInterpretation: dispersion > 1 indicates overdispersion\n")
+
+```
+
+```{r}
+# Coefficient table
+tidy(poisson_model, conf.int = TRUE) %>%
+  kable(digits = 4, caption = "Poisson Regression Coefficients (n=651)")
+```
+
+```{r}
+# Coefficient table
+tidy(quasipoisson_model, conf.int = TRUE) %>%
+  kable(digits = 4, caption = "Quasi-Poisson Regression Coefficients (n=651)")
+```
+
+### Task 4: Poisson and Quasi-Poisson Regression Models
+
+We fit Poisson regression models predicting STRESS (count of stressful events) using family cohesion, self-esteem, grades, and school attachment as predictors (n=`r nobs(poisson_model)`).
+
+Model Specification:
+
+Link function: log (canonical link for Poisson)
+Model form: log(E[STRESS]) = β₀ + β₁(COHES) + β₂(ESTEEM) + β₃(GRADES) + β₄(SATTACH)
+
+**Standard Poisson Model Results:**
+
+- Null deviance: `r round(poisson_model$null.deviance, 1)` (df=`r poisson_model$df.null`)
+- Residual deviance: `r round(poisson_model$deviance, 1)` (df=`r poisson_model$df.residual`)
+- Deviance reduction: `r round(poisson_model$null.deviance - poisson_model$deviance, 1)`
+- AIC = `r round(AIC(poisson_model), 2)`, BIC = `r round(BIC(poisson_model), 2)`
+
+All four predictors are statistically significant:
+
+**Coefficient Interpretation in Context:**
+
+The coefficients are on the log scale, so we exponentiate to get Incidence Rate 
+Ratios (IRRs):
+
+- COHES (Family Cohesion): β = `r round(coef(poisson_model)["COHES"], 4)`, IRR = `r round(exp(coef(poisson_model)["COHES"]), 4)` (95% CI: `r round(exp(confint(poisson_model)["COHES", 1]), 3)`, `r round(exp(confint(poisson_model)["COHES", 2]), 3)`), p = `r round(summary(poisson_model)$coefficients["COHES", 4], 4)`
+  - Each 1-point increase multiplies expected stress count by `r round(exp(coef(poisson_model)["COHES"]), 4)`, a `r abs(round((exp(coef(poisson_model)["COHES"]) - 1) * 100, 1))`% decrease
+  - Is 1-unit meaningful? COHES ranges `r min(stress$COHES)` to `r max(stress$COHES)` (SD=`r round(sd(stress$COHES), 2)`); 1 unit = `r round(1/sd(stress$COHES)*100, 0)`% of SD — quite small
+  - A 10-point increase (≈1 SD) multiplies stress count by `r round(exp(coef(poisson_model)["COHES"])^10, 3)`, a `r abs(round((exp(coef(poisson_model)["COHES"])^10 - 1)*100, 1))`% decrease
+
+- ESTEEM (Self-Esteem): β = `r round(coef(poisson_model)["ESTEEM"], 4)`, IRR = `r round(exp(coef(poisson_model)["ESTEEM"]), 4)` (95% CI: `r round(exp(confint(poisson_model)["ESTEEM", 1]), 3)`, `r round(exp(confint(poisson_model)["ESTEEM", 2]), 3)`), p = `r round(summary(poisson_model)$coefficients["ESTEEM", 4], 4)`
+  - Each 1-point increase → `r abs(round((exp(coef(poisson_model)["ESTEEM"]) - 1)*100, 1))`% decrease
+  - Range `r round(min(stress$ESTEEM), 1)` to `r max(stress$ESTEEM)` (SD=`r round(sd(stress$ESTEEM), 2)`); 1 unit = `r round(1/sd(stress$ESTEEM)*100, 0)`% of SD — moderately meaningful
+
+- GRADES: β = `r round(coef(poisson_model)["GRADES"], 4)`, IRR = `r round(exp(coef(poisson_model)["GRADES"]), 4)` (95% CI: `r round(exp(confint(poisson_model)["GRADES", 1]), 3)`, `r round(exp(confint(poisson_model)["GRADES", 2]), 3)`), p = `r round(summary(poisson_model)$coefficients["GRADES", 4], 4)`
+  - Each 1-point increase → `r abs(round((exp(coef(poisson_model)["GRADES"]) - 1)*100, 1))`% decrease
+  - Range `r round(min(stress$GRADES), 1)` to `r max(stress$GRADES)` (SD=`r round(sd(stress$GRADES), 2)`); 1 unit = `r round(1/sd(stress$GRADES)*100, 0)`% of SD — meaningful
+
+- SATTACH (School Attachment): β = `r round(coef(poisson_model)["SATTACH"], 4)`, IRR = `r round(exp(coef(poisson_model)["SATTACH"]), 4)` (95% CI: `r round(exp(confint(poisson_model)["SATTACH", 1]), 3)`, `r round(exp(confint(poisson_model)["SATTACH", 2]), 3)`), p = `r round(summary(poisson_model)$coefficients["SATTACH", 4], 4)`
+  - Each 1-point increase → `r abs(round((exp(coef(poisson_model)["SATTACH"]) - 1)*100, 1))`% decrease
+  - Range `r round(min(stress$SATTACH), 1)` to `r max(stress$SATTACH)` (SD=`r round(sd(stress$SATTACH), 2)`); 1 unit = `r round(1/sd(stress$SATTACH)*100, 0)`% of SD — moderately meaningful
+
+Assessment of Overdispersion:
+
+A key assumption of Poisson regression is equidispersion (variance = mean). We check this using the dispersion parameter from the quasi-Poisson model:
+
+- Dispersion parameter = `r round(summary(quasipoisson_model)$dispersion, 4)`
+- The variance is `r round(summary(quasipoisson_model)$dispersion, 2)`× the mean, indicating moderate overdispersion (rule of thumb: dispersion > 1.0)
+  
+Quasi-Poisson Model Results:
+
+The quasi-Poisson model accounts for overdispersion by estimating the dispersion parameter and adjusting standard errors:
+
+Standard errors are inflated by √dispersion = `r round(sqrt(summary(quasipoisson_model)$dispersion), 3)`×. Key change: GRADES becomes non-significant (p=`r round(summary(quasipoisson_model)$coefficients["GRADES", 4], 3)`) after correcting for overdispersion, compared to p=`r round(summary(poisson_model)$coefficients["GRADES", 4], 3)` under standard Poisson. This demonstrates why checking for overdispersion matters — it directly affects inference.
+
+**Comparison to OLS Models:**
+- OLS Original: AIC = `r round(AIC(ols_model), 2)`, BIC = `r round(BIC(ols_model), 2)` — inappropriate for count data
+- OLS Log: AIC = `r round(AIC(log_ols_model), 2)`, BIC = `r round(BIC(log_ols_model), 2)` — cannot back-transform validly; not directly comparable (different response scale)
+- Poisson: AIC = `r round(AIC(poisson_model), 2)`, BIC = `r round(BIC(poisson_model), 2)` — assumes equidispersion (violated)
+- Quasi-Poisson: AIC = NA, BIC = NA — uses quasi-likelihood; corrects for overdispersion
+
+
+```{r}
+# Task 5: Predictions with 95% CIs from Poisson model
+cohes_mean <- mean(stress$COHES)
+cohes_sd <- sd(stress$COHES)
+
+# Define groups
+cohes_low <- cohes_mean - cohes_sd     # Low: < 1 SD below mean
+cohes_high <- cohes_mean + cohes_sd    # High: > 1 SD above mean
+
+cat("\n=== COHES Group Definitions ===\n")
+cat("Mean COHES:", round(cohes_mean, 2), "\n")
+cat("SD COHES:", round(cohes_sd, 2), "\n")
+cat("Low group (< mean-1SD):", round(cohes_low, 2), "\n")
+cat("Middle group (mean-1SD to mean+1SD):", round(cohes_mean, 2), "\n")
+cat("High group (> mean+1SD):", round(cohes_high, 2), "\n")
+
+```
+
+```{r}
+# Create prediction data frames (holding other vars at means)
+pred_data_low <- data.frame(
+  COHES = cohes_low,
+  ESTEEM = mean(stress$ESTEEM),
+  GRADES = mean(stress$GRADES),
+  SATTACH = mean(stress$SATTACH)
+)
+
+pred_data_middle <- data.frame(
+  COHES = cohes_mean,
+  ESTEEM = mean(stress$ESTEEM),
+  GRADES = mean(stress$GRADES),
+  SATTACH = mean(stress$SATTACH)
+)
+
+pred_data_high <- data.frame(
+  COHES = cohes_high,
+  ESTEEM = mean(stress$ESTEEM),
+  GRADES = mean(stress$GRADES),
+  SATTACH = mean(stress$SATTACH)
+)
+
+```
+
+```{r}
+# Predictions with 95% CIs from Poisson model
+# CIs computed on the log scale then back-transformed (correct approach for GLMs)
+
+get_poisson_pred_ci <- function(model, newdata) {
+  pred_link <- predict(model, newdata = newdata, type = "link", se.fit = TRUE)
+  est   <- exp(pred_link$fit)
+  lower <- exp(pred_link$fit - 1.96 * pred_link$se.fit)
+  upper <- exp(pred_link$fit + 1.96 * pred_link$se.fit)
+  return(data.frame(Predicted = est, CI_Lower = lower, CI_Upper = upper))
+}
+
+ci_low    <- get_poisson_pred_ci(poisson_model, pred_data_low)
+ci_middle <- get_poisson_pred_ci(poisson_model, pred_data_middle)
+ci_high   <- get_poisson_pred_ci(poisson_model, pred_data_high)
+
+pred_table <- data.frame(
+  Group       = c("Low (mean - 1SD)", "Middle (mean)", "High (mean + 1SD)"),
+  COHES_Value = round(c(cohes_low, cohes_mean, cohes_high), 2),
+  Predicted   = round(c(ci_low$Predicted, ci_middle$Predicted, ci_high$Predicted), 3),
+  CI_Lower_95 = round(c(ci_low$CI_Lower,  ci_middle$CI_Lower,  ci_high$CI_Lower),  3),
+  CI_Upper_95 = round(c(ci_low$CI_Upper,  ci_middle$CI_Upper,  ci_high$CI_Upper),  3)
+)
+
+print("Table 5a: Predicted STRESS Counts by COHES Level (n=651, other vars held at means)")
+kable(pred_table)
+
+pct_diff <- 100 * (ci_high$Predicted - ci_low$Predicted) / ci_low$Predicted
+cat("\nPercent difference in predicted counts (High vs Low COHES):", round(pct_diff, 2), "%\n")
+cat("Absolute difference:", round(ci_high$Predicted - ci_low$Predicted, 3), "events\n")
+
+```
+
+### Task 5: Predicted Stress Counts by Family Cohesion Level
+
+We computed predicted stress counts for adolescents at different levels of family cohesion, holding all other predictors at their means. CIs are computed on the log scale and back-transformed — these are confidence intervals on the mean predicted count, not prediction intervals for individual observations.
+
+Percent difference (High vs Low): `r round(100 * (ci_high$Predicted - ci_low$Predicted) / ci_low$Predicted, 1)`%
+
+Adolescents with high family cohesion are predicted to experience `r abs(round(100 * (ci_high$Predicted - ci_low$Predicted) / ci_low$Predicted, 1))`% fewer stressful events compared to those with low cohesion. The absolute difference is `r abs(round(ci_high$Predicted - ci_low$Predicted, 3))` events — a meaningful reduction when the sample mean is only `r round(mean(stress$STRESS), 2)` events.
+
+Absolute difference: `r round(ci_high$Predicted - ci_low$Predicted, 3)` events
+This represents a change of 2.2 standard deviations in COHES (22.77 points)
+
+```{r}
+# Task 6: AIC and BIC comparison
+cat("\n=== Task 6: Model Comparison (AIC/BIC) ===\n")
+cat("Poisson AIC:", round(AIC(poisson_model), 2), "\n")
+cat("Poisson BIC:", round(BIC(poisson_model), 2), "\n")
+cat("\nNote: Quasi-Poisson doesn't have AIC/BIC (no likelihood)\n")
+cat("Quasi-Poisson uses dispersion parameter instead\n")
+
+# Create comprehensive comparison table
+model_comparison <- data.frame(
+  Model = c("OLS Original", "OLS Log", "Poisson", "Quasi-Poisson"),
+  n = c(651, 651, 651, 651),
+  Deviance = c(NA, NA, 
+               round(poisson_model$deviance, 2),
+               round(quasipoisson_model$deviance, 2)),
+  Dispersion = c(NA, NA, 1.0, round(dispersion, 4)),
+  AIC = c(2602.24, 1271.26, round(AIC(poisson_model), 2), NA),
+  BIC = c(2629.11, 1298.13, round(BIC(poisson_model), 2), NA)
+)
+print("\nTable 4: Model Comparison Across All Methods")
+kable(model_comparison)
+
+```
+
+```{r}
+# Additional calculations for interpretation
+# Exponentiate coefficients to get Incidence Rate Ratios (IRRs)
+irr_poisson <- exp(coef(poisson_model))
+irr_quasi <- exp(coef(quasipoisson_model))
+
+# Create IRR table with CIs
+irr_table <- data.frame(
+  Variable = names(coef(poisson_model)),
+  Coefficient = round(coef(poisson_model), 4),
+  IRR = round(irr_poisson, 4),
+  CI_Lower = round(exp(confint(poisson_model)[,1]), 4),
+  CI_Upper = round(exp(confint(poisson_model)[,2]), 4),
+  Interpretation = c(
+    "Baseline rate when all X=0",
+    "0.8% decrease per 1-unit increase",
+    "2.3% decrease per 1-unit increase", 
+    "2.3% decrease per 1-unit increase",
+    "1.6% decrease per 1-unit increase"
+  )
+)
+
+print("Table 5: Incidence Rate Ratios (IRRs) from Poisson Model (n=651)")
+kable(irr_table)
+
+```
+
+### Task 6: Model Comparison - AIC and BIC
+
+- Poisson AIC = `r round(AIC(poisson_model), 2)`, BIC = `r round(BIC(poisson_model), 2)`
+- Quasi-Poisson: AIC and BIC are not available — quasi-Poisson uses quasi-likelihood rather than full maximum likelihood, so no log-likelihood exists from which to compute these statistics. Instead, fit is assessed via the dispersion parameter (ϕ = `r round(summary(quasipoisson_model)$dispersion, 2)`), deviance (`r round(quasipoisson_model$deviance, 1)`), and adjusted standard errors.
+
+**Which model is better?** Given the dispersion parameter of `r round(summary(quasipoisson_model)$dispersion, 2)`, the quasi-Poisson model is more appropriate than standard Poisson because it corrects for overdispersion, provides more realistic (wider) confidence intervals, and adjusts p-values appropriately (GRADES becomes non-significant at p=`r round(summary(quasipoisson_model)$coefficients["GRADES", 4], 3)`). However, the presence of overdispersion and `r round(100 * mean(stress$STRESS == 0), 0)`% zeros in the data suggests we should explore ZIP or Negative Binomial models in subsequent tasks.
+
+
+```{r}
+# Task 7: Deviance residuals plot
+stress$poisson_pred <- predict(poisson_model, type = "response")
+stress$dev_resid <- residuals(poisson_model, type = "deviance")
+stress$pearson_resid <- residuals(poisson_model, type = "pearson")
+
+# Create diagnostic plots
+par(mfrow = c(2, 2))
+
+# 1. Deviance residuals vs Predicted
+plot(stress$poisson_pred, stress$dev_resid,
+     main = "Deviance Residuals vs Predicted Values",
+     xlab = "Predicted Count (Poisson Model)",
+     ylab = "Deviance Residuals",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+abline(h = 0, col = "red", lwd = 2)
+abline(h = c(-2, 2), col = "red", lwd = 1, lty = 2)
+lines(lowess(stress$poisson_pred, stress$dev_resid), col = "blue", lwd = 2)
+text(max(stress$poisson_pred) * 0.7, 3, 
+     paste("Points outside ±2:", sum(abs(stress$dev_resid) > 2)),
+     col = "red")
+
+# 2. Pearson residuals vs Predicted
+plot(stress$poisson_pred, stress$pearson_resid,
+     main = "Pearson Residuals vs Predicted Values",
+     xlab = "Predicted Count",
+     ylab = "Pearson Residuals",
+     pch = 16, col = rgb(0, 0.5, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2)
+abline(h = c(-2, 2), col = "red", lwd = 1, lty = 2)
+lines(lowess(stress$poisson_pred, stress$pearson_resid), col = "darkgreen", lwd = 2)
+
+# 3. Histogram of deviance residuals
+hist(stress$dev_resid,
+     breaks = 30,
+     main = "Distribution of Deviance Residuals",
+     xlab = "Deviance Residuals",
+     col = "lightblue",
+     probability = TRUE)
+curve(dnorm(x, mean = mean(stress$dev_resid), sd = sd(stress$dev_resid)),
+      add = TRUE, col = "red", lwd = 2)
+
+# 4. Q-Q plot of deviance residuals
+qqnorm(stress$dev_resid, main = "Q-Q Plot: Deviance Residuals")
+qqline(stress$dev_resid, col = "red", lwd = 2)
+
+par(mfrow = c(1, 1))
+
+```
+
+```{r}
+# Summary statistics for residuals
+cat("\n=== Residual Diagnostics ===\n")
+cat("Deviance Residuals:\n")
+cat("  Min:", round(min(stress$dev_resid), 3), "\n")
+cat("  Q1:", round(quantile(stress$dev_resid, 0.25), 3), "\n")
+cat("  Median:", round(median(stress$dev_resid), 3), "\n")
+cat("  Q3:", round(quantile(stress$dev_resid, 0.75), 3), "\n")
+cat("  Max:", round(max(stress$dev_resid), 3), "\n")
+cat("  Points > |2|:", sum(abs(stress$dev_resid) > 2), 
+    "(", round(100*sum(abs(stress$dev_resid) > 2)/651, 1), "%)\n")
+cat("  Points > |3|:", sum(abs(stress$dev_resid) > 3),
+    "(", round(100*sum(abs(stress$dev_resid) > 3)/651, 1), "%)\n")
+
+```
+
+```{r}
+# Check for patterns by observed Y value
+resid_by_y <- aggregate(dev_resid ~ STRESS, data = stress, FUN = mean)
+plot(resid_by_y$STRESS, resid_by_y$dev_resid,
+     type = "b", pch = 16, col = "blue",
+     main = "Mean Deviance Residual by Observed STRESS",
+     xlab = "Observed STRESS Count",
+     ylab = "Mean Deviance Residual",
+     ylim = c(min(resid_by_y$dev_resid), max(resid_by_y$dev_resid)))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+grid()
+
+```
+
+```{r}
+# Test for overdispersion using residuals
+cat("\nOverdispersion check:\n")
+cat("  Residual deviance:", round(poisson_model$deviance, 2), "\n")
+cat("  Residual df:", poisson_model$df.residual, "\n")
+cat("  Deviance/df ratio:", round(poisson_model$deviance/poisson_model$df.residual, 3), "\n")
+cat("  (Ratio > 1 suggests overdispersion)\n")
+
+```
+
+### Task 7: Deviance Residual Diagnostics
+We examined deviance residuals from the Poisson model to assess model fit and identify potential specification issues (n=`r nobs(poisson_model)`).
+
+Residual Summary Statistics:
+- Range: [`r round(min(stress$dev_resid), 3)`, `r round(max(stress$dev_resid), 3)`]
+- Median: `r round(median(stress$dev_resid), 3)`
+- IQR: [`r round(quantile(stress$dev_resid, 0.25), 3)`, `r round(quantile(stress$dev_resid, 0.75), 3)`]
+- Points with |residual| > 2: `r sum(abs(stress$dev_resid) > 2)` (`r round(100 * mean(abs(stress$dev_resid) > 2), 1)`%)
+- Points with |residual| > 3: `r sum(abs(stress$dev_resid) > 3)` (`r round(100 * mean(abs(stress$dev_resid) > 3), 1)`%)
+
+Under a well-fitting model, we'd expect ~5% of residuals outside ±2. We observe `r round(100 * mean(abs(stress$dev_resid) > 2), 1)`%, suggesting poorer fit than expected.
+
+Deviance/df Ratio:
+- Residual deviance: `r round(poisson_model$deviance, 2)`
+- Residual df: `r poisson_model$df.residual`
+- Ratio: `r round(poisson_model$deviance / poisson_model$df.residual, 3)`
+
+This ratio confirms overdispersion (ratio > 1). In a well-fitting Poisson model this ratio should be ≈1. A ratio of `r round(poisson_model$deviance / poisson_model$df.residual, 2)` indicates the variance is nearly twice what the Poisson model assumes.
+
+Diagnostic Plot Findings:
+
+1. Deviance Residuals vs Predicted Values:
+
+- Distinct banding pattern: Horizontal bands corresponding to discrete Y values (0, 1, 2, ..., `r max(stress$STRESS)`)
+- Funnel shape: Variance increases with predicted values
+- Lowess curve is NOT flat at zero: Shows systematic pattern, starting positive at low predictions, crossing zero, then trending negative
+
+This indicates the model is systematically biased across the range of predictions
+
+2. Mean Deviance Residual by Observed STRESS (CRITICAL FINDING):
+This plot reveals a strong systematic pattern:
+
+- At STRESS = 0: Mean residual ≈  `r round(mean(stress$dev_resid[stress$STRESS == 0]), 2)` (large negative)
+- At STRESS = 1-2: Mean residual ≈ 0 to +0.2
+- At STRESS = `r max(stress$STRESS)`: Mean residual ≈ `r round(mean(stress$dev_resid[stress$STRESS == max(stress$STRESS)]), 2)` (large positive)
+
+This pattern seems contradictory — we have `r round(100 * mean(stress$STRESS == 0), 0)`% zeros yet the model over-predicts zeros. The resolution is that the Poisson model is fitting a single process, but the data likely contains two distinct processes: (1) a process determining whether stress occurs at all (structural zeros), and (2) a process determining how many events occur given stress is present. The standard Poisson cannot distinguish these, leading to systematic bias.
+
+3. Q-Q Plot:
+
+- Shows heavy tails in both directions
+- Deviation from normality in the tails
+
+This is expected for count data but suggests the Poisson distribution may not fully capture the data-generating process
+
+4. Histogram of Deviance Residuals:
+
+- Approximately symmetric but heavy-tailed
+- Mode near zero with substantial spread
+- More extreme values than expected under Poisson
+
+Conclusion:
+The residual diagnostics reveal three major issues:
+
+- Overdispersion (deviance/df = `r round(poisson_model$deviance / poisson_model$df.residual, 2)`, dispersion parameter = `r round(summary(quasipoisson_model)$dispersion, 2)`)
+- Systematic bias as shown by non-zero lowess curve and mean residual pattern
+- Potential excess zeros requiring a different model structure
+
+These findings strongly suggest the Poisson model is inadequate. The systematic pattern in mean residuals by observed count indicates we need a model that can handle:
+
+- Excess zeros beyond what Poisson predicts
+- Overdispersion in the count process
+
+Next steps: Explore Zero-Inflated Poisson (ZIP) or Negative Binomial models that can accommodate these features.
+
+```{r}
+# Task 8: Create binary indicator for stress presence
+stress$Y_IND <- ifelse(stress$STRESS == 0, 0, 1)
+
+# Verify coding
+table(stress$Y_IND, stress$STRESS > 0)
+cat("Zeros:", sum(stress$Y_IND == 0), 
+    "(", round(100*mean(stress$Y_IND == 0), 1), "%)\n")
+cat("Non-zeros:", sum(stress$Y_IND == 1),
+    "(", round(100*mean(stress$Y_IND == 1), 1), "%)\n")
+
+# Fit logistic regression
+logit_model <- glm(Y_IND ~ COHES + ESTEEM + GRADES + SATTACH,
+                   data = stress,
+                   family = binomial(link = "logit"))
+
+summary(logit_model)
+kable(confint(logit_model))
+
+```
+
+```{r}
+# Calculate odds ratios
+or_table <- data.frame(
+  Variable = names(coef(logit_model)),
+  Coefficient = round(coef(logit_model), 4),
+  SE = round(summary(logit_model)$coefficients[, 2], 4),
+  OR = round(exp(coef(logit_model)), 4),
+  OR_CI_Lower = round(exp(confint(logit_model)[, 1]), 4),
+  OR_CI_Upper = round(exp(confint(logit_model)[, 2]), 4),
+  p_value = round(summary(logit_model)$coefficients[, 4], 4)
+)
+
+print("Table 6: Logistic Regression - Predicting Stress Presence (n=651)")
+kable(or_table)
+
+# Coefficient table
+tidy(logit_model, conf.int = TRUE) %>%
+  kable(digits = 4, caption = "Poisson Regression Coefficients (n=651)")
+
+  nobs(logit_model)
+
+```
+
+```{r}
+# Model fit statistics
+logit_deviance <- logit_model$deviance
+logit_null_dev <- logit_model$null.deviance
+pseudo_r2 <- 1 - (logit_deviance / logit_null_dev)
+
+cat("\n=== Logistic Model Fit ===\n")
+cat("Null deviance:", round(logit_null_dev, 2), "\n")
+cat("Residual deviance:", round(logit_deviance, 2), "\n")
+cat("Pseudo R²:", round(pseudo_r2, 4), "\n")
+cat("AIC:", round(AIC(logit_model), 2), "\n")
+cat("BIC:", round(BIC(logit_model), 2), "\n")
+
+```
+
+```{r}
+# Hosmer-Lemeshow type assessment
+stress$logit_pred_prob <- predict(logit_model, type = "response")
+
+# Plot predicted probabilities
+hist(stress$logit_pred_prob,
+     breaks = 30,
+     main = "Predicted Probability of Stress > 0",
+     xlab = "Predicted Probability",
+     col = "lightblue")
+abline(v = mean(stress$Y_IND), col = "red", lwd = 2, lty = 2)
+text(0.8, 40, paste("Observed proportion =", round(mean(stress$Y_IND), 3)),
+     col = "red")
+
+```
+
+```{r}
+# Classification table at 0.5 threshold
+stress$logit_pred_class <- ifelse(stress$logit_pred_prob > 0.5, 1, 0)
+conf_matrix <- table(Predicted = stress$logit_pred_class, 
+                     Actual = stress$Y_IND)
+print("Confusion Matrix - Logistic Regression (n=651, threshold = 0.5):")
+kable(conf_matrix)
+
+```
+
+```{r}
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+sensitivity <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+specificity <- conf_matrix[1, 1] / sum(conf_matrix[, 1])
+
+cat("\nClassification Metrics:\n")
+cat("Accuracy:", round(accuracy, 3), "\n")
+cat("Sensitivity:", round(sensitivity, 3), "\n")
+cat("Specificity:", round(specificity, 3), "\n")
+
+```
+
+### Task 8: Logistic Regression - Predicting Stress Presence
+
+We created a binary indicator (Y_IND) where 0 = no stressful events (n=`r sum(stress$Y_IND == 0)`, `r round(100 * mean(stress$Y_IND == 0), 1)`%) and 1 = any stressful events (n=`r sum(stress$Y_IND == 1)`, `r round(100 * mean(stress$Y_IND == 1), 1)`%).
+
+**Formal Hypotheses (individual coefficient tests):**
+
+For each predictor, the null hypothesis is that the coefficient is zero in the population — i.e., the predictor has no effect on the log-odds of stress presence:
+
+- H₀: β_COHES = 0 vs. Hₐ: β_COHES ≠ 0
+- H₀: β_ESTEEM = 0 vs. Hₐ: β_ESTEEM ≠ 0
+- H₀: β_GRADES = 0 vs. Hₐ: β_GRADES ≠ 0
+- H₀: β_SATTACH = 0 vs. Hₐ: β_SATTACH ≠ 0
+
+**Omnibus test:** H₀: β_COHES = β_ESTEEM = β_GRADES = β_SATTACH = 0 vs. Hₐ: at least one β ≠ 0. Evaluated via deviance reduction: Δdeviance = `r round(logit_model$null.deviance - logit_model$deviance, 2)` on `r logit_model$df.null - logit_model$df.residual` df, p < 0.001. The model as a whole is statistically significant.
+
+**Logistic Regression Results (n=`r nobs(logit_model)`):**
+
+- COHES: β = `r round(coef(logit_model)["COHES"], 4)` (SE = `r round(summary(logit_model)$coefficients["COHES", 2], 4)`),OR = `r round(exp(coef(logit_model)["COHES"]), 4)` (95% CI: `r round(exp(confint(logit_model)["COHES", 1]), 4)`, `r round(exp(confint(logit_model)["COHES", 2]), 4)`), p = `r round(summary(logit_model)$coefficients["COHES", 4], 4)` — **Reject H₀**
+- Each 1-point increase decreases odds of stress presence by `r abs(round((exp(coef(logit_model)["COHES"]) - 1) * 100, 1))`%
+- Is 1-unit meaningful? COHES ranges `r min(stress$COHES)` to `r max(stress$COHES)` (SD=`r round(sd(stress$COHES), 2)`); 1 unit = `r round(1/sd(stress$COHES)*100, 0)`% of SD — quite small. A 10-point increase 
+(≈1 SD) decreases odds by `r abs(round((exp(coef(logit_model)["COHES"])^10 - 1)*100, 1))`% (OR¹⁰ = `r round(exp(coef(logit_model)["COHES"])^10, 3)`)
+
+- ESTEEM: β = `r round(coef(logit_model)["ESTEEM"], 4)` (SE = `r round(summary(logit_model)$coefficients["ESTEEM", 2], 4)`), OR = `r round(exp(coef(logit_model)["ESTEEM"]), 4)` (95% CI: `r round(exp(confint(logit_model)["ESTEEM", 1]), 4)`, `r round(exp(confint(logit_model)["ESTEEM", 2]), 4)`), p = `r round(summary(logit_model)$coefficients["ESTEEM", 4], 4)` — Fail to reject H₀. Range `r round(min(stress$ESTEEM), 1)` to `r max(stress$ESTEEM)` (SD=`r round(sd(stress$ESTEEM), 2)`); 1 unit = `r round(1/sd(stress$ESTEEM)*100, 0)`% of SD — effect negligible and non-significant
+
+- GRADES: β = `r round(coef(logit_model)["GRADES"], 4)` (SE = `r round(summary(logit_model)$coefficients["GRADES", 2], 4)`), OR = `r round(exp(coef(logit_model)["GRADES"]), 4)` (95% CI: `r round(exp(confint(logit_model)["GRADES", 1]), 4)`, `r round(exp(confint(logit_model)["GRADES", 2]), 4)`), p = `r round(summary(logit_model)$coefficients["GRADES", 4], 4)` — Fail to reject H₀. Range `r round(min(stress$GRADES), 1)` to `r max(stress$GRADES)` (SD=`r round(sd(stress$GRADES), 2)`); 1 unit = `r round(1/sd(stress$GRADES)*100, 0)`% of SD — small and non-significant
+
+- SATTACH: β = `r round(coef(logit_model)["SATTACH"], 4)` (SE = `r round(summary(logit_model)$coefficients["SATTACH", 2], 4)`), OR = `r round(exp(coef(logit_model)["SATTACH"]), 4)` (95% CI: `r round(exp(confint(logit_model)["SATTACH", 1]), 4)`, `r round(exp(confint(logit_model)["SATTACH", 2]), 4)`), p = `r round(summary(logit_model)$coefficients["SATTACH", 4], 4)` — Fail to reject H₀. Range `r round(min(stress$SATTACH), 1)` to `r max(stress$SATTACH)` (SD=`r round(sd(stress$SATTACH), 2)`); 1 unit = `r round(1/sd(stress$SATTACH)*100, 0)`% of SD — borderline, CI includes 1.0
+
+Model Fit:
+- Pseudo R² = `r round(1 - logit_model$deviance / logit_model$null.deviance, 4)` (only `r round((1 - logit_model$deviance / logit_model$null.deviance)*100, 1)`% of deviance explained)
+- Deviance reduction: `r round(logit_model$null.deviance, 2)` → `r round(logit_model$deviance, 2)` (Δ = `r round(logit_model$null.deviance - logit_model$deviance, 2)`) 
+- AIC = `r round(AIC(logit_model), 2)`, BIC = `r round(BIC(logit_model), 2)`
+
+Classification Performance:
+- Accuracy: `r round(100 * mean(stress$logit_pred_class == stress$Y_IND), 1)`%
+- Sensitivity: `r round(100 * conf_matrix[2,2] / sum(conf_matrix[,2]), 1)`% (identifying true stress presence)
+- Specificity: `r round(100 * conf_matrix[1,1] / sum(conf_matrix[,1]), 1)`% (identifying true zeros — very poor)
+
+The model correctly identifies only `r conf_matrix[1,1]` of `r sum(conf_matrix[,1])` true zeros. Predicted probabilities range from `r round(min(stress$logit_pred_prob), 2)` to `r round(max(stress$logit_pred_prob), 2)`, clustering around the observed proportion (`r round(mean(stress$Y_IND), 3)`), with very few falling below the 0.5 threshold.
+
+#### Critical Issue - Should we rerun?
+Yes, we should rerun with a reduced model. Of the four predictors, only COHES is statistically significant (p=`r round(summary(logit_model)$coefficients["COHES", 4], 4)`). ESTEEM (p=`r round(summary(logit_model)$coefficients["ESTEEM", 4], 3)`), GRADES (p=`r round(summary(logit_model)$coefficients["GRADES", 4], 3)`), and SATTACH (p=`r round(summary(logit_model)$coefficients["SATTACH", 4], 3)`) are all clearly non-significant. The recommended next step is to refit retaining only COHES and compare via LRT:
+
+- H₀: β_ESTEEM = 0 vs. Hₐ: β_ESTEEM ≠ 0 → Fail to reject (p=0.4268)
+- H₀: β_GRADES = 0 vs. Hₐ: β_GRADES ≠ 0 → Fail to reject (p=0.3744)  
+- H₀: β_SATTACH = 0 vs. Hₐ: β_SATTACH ≠ 0 → Fail to reject (p=0.1136)
+
+The recommended next step is to refit the logistic regression retaining only COHES, then compare fit via AIC/BIC and likelihood ratio test:
+
+H₀: β_ESTEEM = β_GRADES = β_SATTACH = 0 (reduced model is sufficient)
+Hₐ: At least one of these betas ≠ 0
+
+If the LRT is non-significant, the reduced model is preferred on both statistical and parsimony grounds. The poor specificity (`r round(100 * conf_matrix[1,1] / sum(conf_matrix[,1]), 1)`%) is unlikely to be resolved by dropping predictors alone — it reflects that the available variables have weak discriminatory power for the zero vs. non-zero outcome — but a cleaner, more defensible model is still preferable going into the ZIP construction in Task 9.
+
+Note: For the purposes of Tasks 9 and 10, we proceed with the full model to maintain consistency across the assignment, but acknowledge that a COHES-only logistic component would be the statistically preferred specification.
+
+```{r}
+# Task 9: Manual ZIP construction
+cat("\n\n=== Task 9: Manual ZIP Model Construction ===\n")
+
+# Step 1: Logistic part (already done above)
+cat("Step 1: Logistic regression for P(STRESS = 0) - DONE\n")
+
+# Step 2: Poisson part CONDITIONAL on STRESS > 0
+cat("\nStep 2: Poisson regression conditional on STRESS > 0\n")
+
+# Subset data where stress > 0
+stress_nonzero <- stress[stress$STRESS > 0, ]
+cat("Sample size for conditional Poisson:", nrow(stress_nonzero), "\n")
+
+```
+
+```{r}
+# Fit Poisson on non-zero counts
+poisson_conditional <- glm(STRESS ~ COHES + ESTEEM + GRADES + SATTACH,
+                          data = stress_nonzero,
+                          family = poisson(link = "log"))
+
+summary(poisson_conditional)
+
+```
+
+```{r}
+# Coefficient table
+tidy(poisson_conditional, conf.int = TRUE) %>%
+  kable(digits = 4, caption = "Poisson Regression Coefficients - Conditional (n=430)")
+
+  nobs(poisson_conditional)
+```
+
+```{r}
+cat("\n=== Comparing Unconditional vs Conditional Poisson ===\n")
+comparison_poisson <- data.frame(
+  Variable = names(coef(poisson_model)),
+  Unconditional_Est = round(coef(poisson_model), 4),
+  Unconditional_SE = round(summary(poisson_model)$coefficients[, 2], 4),
+  Conditional_Est = round(coef(poisson_conditional), 4),
+  Conditional_SE = round(summary(poisson_conditional)$coefficients[, 2], 4)
+)
+
+print("Table 7a: Unconditional vs Conditional Poisson Coefficients (n_full=651, n_nonzero=430)")
+kable(comparison_poisson)
+
+```
+
+```{r}
+# Step 3: Combine for ZIP predictions
+cat("\n\nStep 3: Combining logistic and conditional Poisson for ZIP predictions\n")
+
+# For each observation:
+# P(Y = 0) = logit_prob_zero + (1 - logit_prob_zero) * P(Poisson = 0)
+# P(Y = k) for k > 0 = (1 - logit_prob_zero) * P(Poisson = k)
+# E[Y] = (1 - logit_prob_zero) * lambda_poisson
+
+# Get predictions from both parts
+stress$zip_prob_structural_zero <- 1 - predict(logit_model, type = "response")
+stress$zip_lambda_conditional <- predict(poisson_conditional, 
+                                        newdata = stress, 
+                                        type = "response")
+
+# Expected count under ZIP
+stress$zip_manual_pred <- (1 - stress$zip_prob_structural_zero) * 
+                          stress$zip_lambda_conditional
+
+# Compare predictions
+pred_comparison <- data.frame(
+  Model = c("Poisson (unconditional)", 
+            "Manual ZIP",
+            "Observed Mean"),
+  Mean_Prediction = c(mean(stress$poisson_pred),
+                     mean(stress$zip_manual_pred),
+                     mean(stress$STRESS)),
+  SD_Prediction = c(sd(stress$poisson_pred),
+                   sd(stress$zip_manual_pred),
+                   sd(stress$STRESS))
+)
+
+print("Table 7b: Prediction Comparison Across Models (n=651)")
+kable(pred_comparison)
+
+```
+
+```{r}
+# Residuals for manual ZIP
+stress$zip_manual_resid <- stress$STRESS - stress$zip_manual_pred
+
+cat("\nManual ZIP Residual Summary:\n")
+cat("Mean:", round(mean(stress$zip_manual_resid), 4), "\n")
+cat("SD:", round(sd(stress$zip_manual_resid), 4), "\n")
+cat("RMSE:", round(sqrt(mean(stress$zip_manual_resid^2)), 4), "\n")
+
+# Compare to Poisson RMSE
+poisson_rmse <- sqrt(mean((stress$STRESS - stress$poisson_pred)^2))
+zip_rmse <- sqrt(mean(stress$zip_manual_resid^2))
+
+cat("\nRMSE Comparison:\n")
+cat("Poisson:", round(poisson_rmse, 4), "\n")
+cat("Manual ZIP:", round(zip_rmse, 4), "\n")
+
+```
+
+```{r}
+# Plot comparison
+par(mfrow = c(2, 2))
+
+hist(stress$poisson_pred, breaks = 30, 
+     main = "Poisson Predictions", col = "lightblue",
+     xlab = "Predicted STRESS")
+abline(v = mean(stress$STRESS), col = "red", lwd = 2)
+
+hist(stress$zip_manual_pred, breaks = 30,
+     main = "Manual ZIP Predictions", col = "lightgreen",
+     xlab = "Predicted STRESS")
+abline(v = mean(stress$STRESS), col = "red", lwd = 2)
+
+plot(stress$STRESS, stress$poisson_pred,
+     main = "Poisson: Actual vs Predicted",
+     xlab = "Actual", ylab = "Predicted",
+     pch = 16, col = rgb(0, 0, 1, 0.2))
+abline(0, 1, col = "red", lwd = 2)
+
+plot(stress$STRESS, stress$zip_manual_pred,
+     main = "Manual ZIP: Actual vs Predicted",
+     xlab = "Actual", ylab = "Predicted",
+     pch = 16, col = rgb(0, 0.5, 0, 0.2))
+abline(0, 1, col = "red", lwd = 2)
+
+```
+
+### Task 9: Manual ZIP Construction
+
+We manually constructed a ZIP model by combining two components:
+
+Component 1: Logistic Regression (above)
+
+Predicts P(structural zero) = probability of being in the "always-zero" group
+P(stress present) = 1 - P(structural zero)
+Component 2: Conditional Poisson Regression
+
+Fit only on observations with STRESS > 0 (n=`r nrow(stress_nonzero)`)
+Predicts count of events, given stress is present
+
+**Comparison of Unconditional vs Conditional Poisson:**
+The conditional Poisson coefficients are substantially attenuated relative to the unconditional model, particularly for COHES (`r round(coef(poisson_model)["COHES"], 4)` → `r round(coef(poisson_conditional)["COHES"], 4)`, `r abs(round((coef(poisson_conditional)["COHES"] - coef(poisson_model)["COHES"]) / coef(poisson_model)["COHES"] * 100, 1))`% reduction) and SATTACH (`r round(coef(poisson_model)["SATTACH"], 4)` → `r round(coef(poisson_conditional)["SATTACH"], 4)`, `r abs(round((coef(poisson_conditional)["SATTACH"] - coef(poisson_model)["SATTACH"]) / coef(poisson_model)["SATTACH"] * 100, 1))`% reduction). This suggests these variables affect whether stress occurs at all more than how many events occur given stress is present — exactly what ZIP models are designed to capture.
+
+**Manual ZIP Prediction Formula:**
+E[Y] = P(not structural zero) × λ_Poisson
+     = [1 - P(Y_IND = 0)] × exp(β₀ + β₁X₁ + ... + β₄X₄)
+
+**Prediction Comparison:**
+- Poisson mean prediction: `r round(mean(stress$poisson_pred), 4)`, SD: `r round(sd(stress$poisson_pred), 4)`, RMSE: `r round(sqrt(mean((stress$STRESS - stress$poisson_pred)^2)), 4)`
+- Manual ZIP mean prediction: `r round(mean(stress$zip_manual_pred), 4)`, SD: `r round(sd(stress$zip_manual_pred), 4)`, RMSE: `r round(sqrt(mean(stress$zip_manual_resid^2)), 4)`
+- Observed mean: `r round(mean(stress$STRESS), 4)`, SD: `r round(sd(stress$STRESS), 4)`
+
+RMSE improvement: `r round(sqrt(mean((stress$STRESS - stress$poisson_pred)^2)) - sqrt(mean(stress$zip_manual_resid^2)), 4)` (`r abs(round((sqrt(mean(stress$zip_manual_resid^2)) / sqrt(mean((stress$STRESS - stress$poisson_pred)^2)) - 1)*100, 2))`% improvement) — minimal. Both models predict SD (`r round(sd(stress$zip_manual_pred), 3)`) far below the observed SD (`r round(sd(stress$STRESS), 3)`), confirming overdispersion beyond what ZIP captures.
+
+**Is a ZIP model reasonable?**
+
+Arguments FOR ZIP: `r round(100 * mean(stress$STRESS == 0), 1)`% zeros in the data, theoretical justification of two processes, substantially attenuated conditional Poisson coefficients, and systematic mean residual pattern at STRESS = 0.
+
+Arguments AGAINST current specification: weak logistic component (only COHES significant, Pseudo R² = `r round(1 - logit_model$deviance / logit_model$null.deviance, 4)`), minimal RMSE improvement, and remaining overdispersion. A Negative Binomial or ZINB model may be more appropriate.
+
+**Conclusion:** 
+The ZIP framework is theoretically appropriate, but our implementation is limited by weak predictors in the zero-inflation component. Task 10 uses `zeroinfl()` to estimate both components simultaneously and explore alternative specifications.
+
+
+```{r}
+# Task 10: Zero-Inflated Poisson with zeroinfl()
+
+# Model 1: Same predictors in both parts (as specified in assignment)
+zip1 <- zeroinfl(STRESS ~ COHES + ESTEEM + GRADES + SATTACH | 
+                         COHES + ESTEEM + GRADES + SATTACH,
+                 data = stress,
+                 dist = "poisson")
+
+summary(zip1)
+
+```
+
+```{r}
+# Model 2: Intercept-only for zero-inflation (assumes random zeros)
+zip2 <- zeroinfl(STRESS ~ COHES + ESTEEM + GRADES + SATTACH | 1,
+                 data = stress,
+                 dist = "poisson")
+
+summary(zip2)
+
+```
+
+```{r}
+# Count model
+count_coefs <- as.data.frame(summary(zinb1)$coefficients$count)
+count_coefs$CI_Lower <- count_coefs$Estimate - 1.96 * count_coefs$`Std. Error`
+count_coefs$CI_Upper <- count_coefs$Estimate + 1.96 * count_coefs$`Std. Error`
+kable(count_coefs, digits = 4, caption = "ZIP2 Count Model Coefficients (n=651)")
+
+# Zero-inflation model
+zero_coefs <- as.data.frame(summary(zip2)$coefficients$zero)
+zero_coefs$CI_Lower <- zero_coefs$Estimate - 1.96 * zero_coefs$`Std. Error`
+zero_coefs$CI_Upper <- zero_coefs$Estimate + 1.96 * zero_coefs$`Std. Error`
+kable(zero_coefs, digits = 4, caption = "ZIP2 Zero-Inflation Coefficients (n=651)")
+
+```
+
+```{r}
+# Model 3: Best fitting model - explore different predictor combinations
+# Try only significant predictors in zero-inflation
+zip3 <- zeroinfl(STRESS ~ COHES + ESTEEM + GRADES + SATTACH | COHES,
+                 data = stress,
+                 dist = "poisson")
+
+summary(zip3)
+
+```
+
+```{r}
+# Model 4: Try Zero-Inflated Negative Binomial
+zinb1 <- zeroinfl(STRESS ~ COHES + ESTEEM + GRADES + SATTACH | 
+                          COHES + ESTEEM + GRADES + SATTACH,
+                  data = stress,
+                  dist = "negbin")
+
+summary(zinb1)
+
+```
+
+```{r}
+# Create comprehensive comparison table
+model_comparison_final <- data.frame(
+  Model = c("Poisson", "Quasi-Poisson", 
+            "ZIP (same predictors)", "ZIP (intercept only)", 
+            "ZIP (COHES only in ZI)", "ZINB (same predictors)"),
+  
+  LogLik = c(
+    logLik(poisson_model)[1],
+    NA,
+    logLik(zip1)[1],
+    logLik(zip2)[1],
+    logLik(zip3)[1],
+    logLik(zinb1)[1]
+  ),
+  
+  AIC = c(
+    AIC(poisson_model),
+    NA,
+    AIC(zip1),
+    AIC(zip2),
+    AIC(zip3),
+    AIC(zinb1)
+  ),
+  
+  BIC = c(
+    BIC(poisson_model),
+    NA,
+    BIC(zip1),
+    BIC(zip2),
+    BIC(zip3),
+    BIC(zinb1)
+  ),
+  
+  df = c(
+    5, 5, 10, 6, 7, 11
+  )
+)
+
+model_comparison_final$LogLik <- round(model_comparison_final$LogLik, 2)
+model_comparison_final$AIC <- round(model_comparison_final$AIC, 2)
+model_comparison_final$BIC <- round(model_comparison_final$BIC, 2)
+
+print("Table 8: Comprehensive Model Comparison (n=651)")
+kable(model_comparison_final)
+
+```
+
+```{r}
+# Likelihood ratio tests
+cat("\n=== Likelihood Ratio Tests ===\n")
+
+# Test 1: ZIP1 vs Poisson
+lrt_zip1_poisson <- -2 * (logLik(poisson_model) - logLik(zip1))
+df_diff <- 5  # 5 additional parameters in ZIP1
+pval_zip1 <- 1 - pchisq(lrt_zip1_poisson, df_diff)
+cat("ZIP1 vs Poisson: χ²(5) =", round(lrt_zip1_poisson, 2), 
+    ", p =", round(pval_zip1, 4), "\n")
+
+```
+
+```{r}
+# Test 2: ZIP1 vs ZIP2 (test if predictors in ZI part are needed)
+lrt_zip1_zip2 <- -2 * (logLik(zip2) - logLik(zip1))
+df_diff2 <- 4
+pval_zip2 <- 1 - pchisq(lrt_zip1_zip2, df_diff2)
+cat("ZIP1 vs ZIP2 (intercept only): χ²(4) =", round(lrt_zip1_zip2, 2),
+    ", p =", round(pval_zip2, 4), "\n")
+
+```
+
+```{r}
+# Test 3: ZINB vs ZIP1
+lrt_zinb_zip1 <- -2 * (logLik(zip1) - logLik(zinb1))
+df_diff3 <- 1  # 1 additional parameter (theta)
+pval_zinb <- 1 - pchisq(lrt_zinb_zip1, df_diff3)
+cat("ZINB vs ZIP1: χ²(1) =", round(lrt_zinb_zip1, 2),
+    ", p =", round(pval_zinb, 4), "\n")
+
+```
+
+```{r}
+# Get predictions from best models
+stress$zip1_pred <- predict(zip1, type = "response")
+stress$zip3_pred <- predict(zip3, type = "response")
+stress$zinb1_pred <- predict(zinb1, type = "response")
+
+# Calculate RMSE for all models
+rmse_table <- data.frame(
+  Model = c("Poisson", "Manual ZIP", "ZIP1", "ZIP2", "ZIP3", "ZINB1"),
+  RMSE = c(
+    sqrt(mean((stress$STRESS - stress$poisson_pred)^2)),
+    sqrt(mean((stress$STRESS - stress$zip_manual_pred)^2)),
+    sqrt(mean((stress$STRESS - stress$zip1_pred)^2)),
+    sqrt(mean((stress$STRESS - predict(zip2, type="response"))^2)),
+    sqrt(mean((stress$STRESS - stress$zip3_pred)^2)),
+    sqrt(mean((stress$STRESS - stress$zinb1_pred)^2))
+  ),
+  MAE = c(
+    mean(abs(stress$STRESS - stress$poisson_pred)),
+    mean(abs(stress$STRESS - stress$zip_manual_pred)),
+    mean(abs(stress$STRESS - stress$zip1_pred)),
+    mean(abs(stress$STRESS - predict(zip2, type="response"))),
+    mean(abs(stress$STRESS - stress$zip3_pred)),
+    mean(abs(stress$STRESS - stress$zinb1_pred))
+  )
+)
+
+rmse_table$RMSE <- round(rmse_table$RMSE, 4)
+rmse_table$MAE <- round(rmse_table$MAE, 4)
+
+print("Table 9: Prediction Error Comparison (n=651)")
+kable(rmse_table)
+
+```
+
+```{r}
+# Vuong test for model comparison
+cat("\n=== Vuong Test for Model Selection ===\n")
+vuong_zip1_poisson <- vuong(zip1, poisson_model)
+print(vuong_zip1_poisson)
+
+vuong_zinb_zip1 <- vuong(zinb1, zip1)
+print(vuong_zinb_zip1)
+
+```
+
+```{r}
+# Plot predictions from best model
+par(mfrow = c(2, 2))
+
+hist(stress$zip1_pred, breaks = 30,
+     main = "ZIP1 Predictions (Same Predictors)",
+     xlab = "Predicted STRESS", col = "lightblue")
+abline(v = mean(stress$STRESS), col = "red", lwd = 2)
+
+hist(stress$zip3_pred, breaks = 30,
+     main = "ZIP3 Predictions (COHES only in ZI)",
+     xlab = "Predicted STRESS", col = "lightgreen")
+abline(v = mean(stress$STRESS), col = "red", lwd = 2)
+
+hist(stress$zinb1_pred, breaks = 30,
+     main = "ZINB Predictions",
+     xlab = "Predicted STRESS", col = "lightcoral")
+abline(v = mean(stress$STRESS), col = "red", lwd = 2)
+
+# Residuals comparison
+plot(stress$STRESS, stress$zinb1_pred,
+     main = "ZINB: Actual vs Predicted",
+     xlab = "Actual STRESS", ylab = "Predicted STRESS",
+     pch = 16, col = rgb(0, 0, 1, 0.2))
+abline(0, 1, col = "red", lwd = 2)
+
+```
+
+```{r}
+# Extract coefficients from best model for interpretation
+cat("\n=== Best Model Coefficients (ZINB, n=651) ===\n")
+kable(summary(zinb1)$coefficients)
+
+```
+
+```{r}
+# Calculate IRRs for count model
+count_coefs <- coef(zinb1)[1:5]
+count_irr <- exp(count_coefs)
+cat("\nIncidence Rate Ratios - Count Model (ZINB, n=651):\n")
+kable(round(count_irr, 4))
+
+```
+
+```{r}
+# Calculate ORs for zero-inflation model
+zi_coefs <- coef(zinb1)[6:10]
+zi_or <- exp(zi_coefs)
+cat("\nOdds Ratios - Zero-Inflation Model (ZINB, n=651):\n")
+kable(round(zi_or, 4))
+
+```
+
+### Task 10: Zero-Inflated Poisson Models using zeroinfl()
+
+We fit multiple ZIP and ZINB models to systematically compare modeling approaches for count data with excess zeros and overdispersion (n=`r nrow(stress)`).
+
+#### Model Comparison Summary (n=651):
+*See Table 8 above for the full comparison table.*
+
+- All ZIP/ZINB models dramatically improve fit over standard Poisson (ΔAIC ≈ `r round(AIC(poisson_model) - AIC(zip3), 0)`–`r round(AIC(poisson_model) - AIC(zinb1), 0)`), but predictive accuracy (RMSE) barely improves (range: `r round(min(c(sqrt(mean((stress$STRESS-stress$zip1_pred)^2)), sqrt(mean((stress$STRESS-predict(zip2,type="response"))^2)), sqrt(mean((stress$STRESS-stress$zip3_pred)^2)), sqrt(mean((stress$STRESS-stress$zinb1_pred)^2)))), 4)`–`r round(max(c(sqrt(mean((stress$STRESS-stress$zip1_pred)^2)), sqrt(mean((stress$STRESS-predict(zip2,type="response"))^2)), sqrt(mean((stress$STRESS-stress$zip3_pred)^2)), sqrt(mean((stress$STRESS-stress$zinb1_pred)^2)))), 4)`).
+
+**Statistical Tests for Model Selection:**
+
+1. Likelihood Ratio Test: ZIP1 vs Poisson
+χ²(`r round(lrt_zip1_poisson, 2)`) on 5 df, p = `r round(pval_zip1, 4)`: ZIP1 significantly better; zero-inflation component is justified.
+
+2. Likelihood Ratio Test: ZIP1 vs ZIP2
+χ²(`r round(lrt_zip1_zip2, 2)`) on 4 df, p = `r round(pval_zip2, 4)`: adding predictors to the zero-inflation part does NOT significantly improve fit — a simpler model is statistically equivalent.
+
+3. Likelihood Ratio Test: ZINB vs ZIP1
+χ²(`r round(lrt_zinb_zip1, 2)`) on 1 df, p = `r round(pval_zinb, 4)`: ZINB significantly better — overdispersion exists beyond excess zeros.
+
+**ZINB — Best Statistical Fit:**
+
+Count model key findings:
+
+- COHES: IRR = `r round(exp(coef(zinb1)["count_COHES"]), 4)`, p = `r round(summary(zinb1)$coefficients$count["COHES", 4], 3)`
+- ESTEEM: IRR = `r round(exp(coef(zinb1)["count_ESTEEM"]), 4)`, p = `r round(summary(zinb1)$coefficients$count["ESTEEM", 4], 3)`
+- GRADES: IRR = `r round(exp(coef(zinb1)["count_GRADES"]), 4)`, p = `r round(summary(zinb1)$coefficients$count["GRADES", 4], 3)` (not significant)
+- SATTACH: IRR = `r round(exp(coef(zinb1)["count_SATTACH"]), 4)`, p = `r round(summary(zinb1)$coefficients$count["SATTACH", 4], 3)` (not significant)
+- θ = `r round(zinb1$theta, 3)` — as θ→∞ Negative Binomial → Poisson; this value confirms substantial overdispersion beyond what ZIP alone captures
+
+Zero-inflation model: none of the predictors are significant in the ZINB zero-inflation component (all p > 0.2), only the intercept is significant (p = `r round(summary(zinb1)$coefficients$zero["(Intercept)", 4], 3)`), suggesting a roughly constant probability of structural zeros across predictor values.
+
+**ZIP3 — Most Parsimonious Recommended Model:**
+
+ZIP3 uses all four predictors in the count model and COHES only in the zero-inflation component. AIC = `r round(AIC(zip3), 2)`, only `r round(AIC(zip3) - AIC(zinb1), 1)` points worse than ZINB but with `r length(coef(zinb1)) - length(coef(zip3))` fewer parameters.
+
+Key ZIP3 findings:
+
+- Count model COHES: IRR = `r round(exp(coef(zip3)["count_COHES"]), 4)`, p = `r round(summary(zip3)$coefficients$count["COHES", 4], 3)`
+- Count model ESTEEM: IRR = `r round(exp(coef(zip3)["count_ESTEEM"]), 4)`, p = `r round(summary(zip3)$coefficients$count["ESTEEM", 4], 3)`
+- Zero-inflation COHES: OR = `r round(exp(coef(zip3)["zero_COHES"]), 4)`, p = `r round(summary(zip3)$coefficients$zero["COHES", 4], 3)` — significant
+
+Family cohesion has dual effects: each 1-point increase raises the odds of being a structural zero by `r abs(round((exp(coef(zip3)["zero_COHES"]) - 1)*100, 1))`% (less likely to experience stress at all), while also reducing the count of events among those who do experience stress. A 10-point increase multiplies the zero-inflation odds by `r round(exp(coef(zip3)["zero_COHES"])^10, 3)` (`r abs(round((exp(coef(zip3)["zero_COHES"])^10 - 1)*100, 1))`% increase in odds of structural zero).
+
+**The Paradox: Great Statistical Fit, Minimal Predictive Improvement:**
+- AIC improvement: Poisson (`r round(AIC(poisson_model), 0)`) → ZINB (`r round(AIC(zinb1), 0)`), 
+Δ = `r round(AIC(poisson_model) - AIC(zinb1), 0)`
+- BIC improvement: Poisson (`r round(BIC(poisson_model), 0)`) → ZINB (`r round(BIC(zinb1), 0)`), 
+Δ = `r round(BIC(poisson_model) - BIC(zinb1), 0)`
+- RMSE: Poisson (`r round(sqrt(mean((stress$STRESS - stress$poisson_pred)^2)), 4)`) → ZINB (`r round(sqrt(mean((stress$STRESS - stress$zinb1_pred)^2)), 4)`), improvement = `r abs(round((sqrt(mean((stress$STRESS-stress$zinb1_pred)^2)) / sqrt(mean((stress$STRESS-stress$poisson_pred)^2)) - 1)*100, 2))`%
+
+*Why the disconnect?*
+Large sample size (n=`r nrow(stress)`) creates high statistical power — everything becomes significant. Weak predictors overall mean even the best model explains limited variance. High baseline variability (SD=`r round(sd(stress$STRESS), 2)`) cannot be captured with these predictors alone. As noted in prior feedback: in large sample situations, everything becomes statistically significant but not necessarily of predictive value.
+
+**Model Selection Recommendation:**
+
+- By AIC/BIC (statistical fit): ZINB is best (AIC=`r round(AIC(zinb1), 2)`, BIC=`r round(BIC(zinb1), 2)`)
+- By parsimony: ZIP3 — only `r round(AIC(zip3) - AIC(zinb1), 1)` AIC points worse than ZINB, `r length(coef(zinb1)) - length(coef(zip3))` fewer parameters, RMSE = `r round(sqrt(mean((stress$STRESS - stress$zip3_pred)^2)), 4)` vs `r round(sqrt(mean((stress$STRESS - stress$zinb1_pred)^2)), 4)` for ZINB
+- By simplicity: ZIP2 — best BIC (`r round(BIC(zip2), 2)`), only `r length(coef(zip2))` parameters, not significantly worse than ZIP1 (LRT p=`r round(pval_zip2, 3)`)
+
+**My recommendation is ZIP3**, which offers the best balance of statistical justification, parsimony, and substantive interpretability. Family cohesion has meaningful dual protective effects that are theoretically coherent and practically communicable.
+
+**Final Synthesis:**
+The data shows `r round(100 * mean(stress$STRESS == 0), 1)`% zeros (vs ~`r round(100 * dpois(0, mean(stress$STRESS)), 0)`% expected under Poisson), variance = `r round(var(stress$STRESS), 2)` against mean = 
+`r round(mean(stress$STRESS), 2)`, confirming both excess zeros and overdispersion. 
+
+Two processes are at work: structural zeros (adolescents who will not experience stress) and a count process (number of events for those who do).
+
+COHES is the strongest, most consistent predictor across all models — affecting both zero-inflation and count components. ESTEEM moderately predicts counts but not zero-inflation. GRADES and SATTACH have weak, inconsistent effects and may not warrant inclusion on parsimony grounds.
+
+Model selection here required judgment — balancing statistical fit, parsimony, interpretability, and practical considerations. There is no single objectively correct answer, and the analyst decisions made throughout this assignment (distributional assumptions, outlier handling, predictor selection) have conditioned every result. 
+
+Future work should consider collecting stronger predictors for the zero-inflation component, exploring interactions (e.g., COHES × ESTEEM), and validating the chosen model on an independent sample.

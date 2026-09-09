@@ -1,0 +1,998 @@
+---
+title: "Assignment 6 - Finalizing the Ames Housing Price Prediction Model"
+author: "Shishir Deshpande"
+date: "February 15, 2026"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+
+# Importing required libraries
+```{r}
+library(tidyr)
+library(readr)
+library(knitr)
+library(corrplot)
+library(dplyr)
+library(MASS)
+library(car)
+
+# Prevent namespace conflicts
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+# Importing the dataset
+```{r}
+data <- read.csv("ames_housing_data.csv")
+
+cat("The dataset has ", nrow(data), "rows and ", ncol(data), "columns")
+
+summary_matrix <- summary(data %>% select(where(is.numeric)))
+summary_df <- as.data.frame(summary_matrix)
+summary_df <- summary_df %>%
+  separate(Freq, into = c("Stat", "Value"), sep = ":", extra = "merge") %>%
+  mutate(Value = trimws(Value)) %>%
+  pivot_wider(names_from = Stat, values_from = Value)
+
+kable(summary_df)
+
+```
+
+# Preparatory work
+## Sampling
+```{r}
+### We will define the sample population similar to Modeling Assignment 1. 
+## Remove non normal sale conditions
+## Filter to single family homes
+ames_data_clean <- data %>%
+  filter(
+    BldgType == "1Fam",
+    SaleCondition == "Normal", 
+    GrLivArea <= 4000)
+
+cat("The cleaned dataset (aka Sample Population) has ", nrow(ames_data_clean), "rows and ", ncol(ames_data_clean), "columns")
+```
+
+## Handling missing values
+```{r}
+
+## Drop variables with >50% missing values and the indicator variables (not useful for modeling); impute the median for LotFrontage since it has 20%~ missing values and is quantitative/continuous; the rest will be filled with 0/None as applicable. Having a zero/None is also valuable as the lack of something can also change sale prices.
+ames_data_clean <- ames_data_clean %>%
+  select(-PoolQC, -MiscFeature, -Alley, -Fence, -FireplaceQu, -SID, -PID) %>%
+  mutate(
+    LotFrontage = replace_na(LotFrontage, median(LotFrontage, na.rm = TRUE)),
+    MasVnrArea = replace_na(MasVnrArea, median(MasVnrArea, na.rm = TRUE)),
+    across(c(GarageFinish, GarageType, GarageQual, GarageCond, BsmtExposure, BsmtFinType2, 
+             BsmtQual, BsmtCond, BsmtFinType1, MasVnrType, Electrical), ~replace_na(., "None")),
+    across(c(GarageYrBlt, BsmtFullBath, BsmtHalfBath), ~replace_na(., 0))
+  )
+
+cat("The cleaned dataset (aka Sample Population) has ", nrow(ames_data_clean), "rows and ", ncol(ames_data_clean), "columns")
+```
+
+## Selecting categorical variables based purely on mean difference between levels (the greater the difference, the more predictive power).
+```{r}
+# Identify all categorical variables
+cat_vars <- names(ames_data_clean)[sapply(ames_data_clean, function(x) is.character(x) | is.factor(x))]
+
+cat(paste(cat_vars, collapse = ", "))
+
+```
+
+**High Priority (Strong Predictors):**
+- ExterQual (Exterior Quality) - Overall material and finish quality directly impacts value
+- KitchenQual - Kitchen quality is a major selling point and renovation cost driver
+- BsmtQual (Basement Quality) - Finished basement quality adds significant living space value
+- HeatingQC (Heating Quality) - Essential comfort feature affecting desirability
+
+**Medium Priority (Moderate Predictors):**
+- Foundation - Type of foundation affects durability and maintenance costs
+- GarageType - Attached vs detached vs none significantly impacts convenience and value
+- GarageFinish - Finished garages add functional space
+- BsmtExposure - Walkout basements are more valuable than enclosed ones
+- MasVnrType - Brick/stone veneer adds curb appeal and perceived quality
+
+**Lower Priority (Weaker Predictors):**
+- RoofStyle - Aesthetic preference with some functional differences
+- Exterior1/Exterior2 - Siding material affects maintenance and appearance
+- SaleType - How property was sold may correlate with price
+- LotShape - Regular lots typically more desirable than irregular
+- Zoning - Residential classifications affect permitted uses
+- SaleCondition - Not relevant as we have only type post our sampling filter
+
+*I will exclude 'Neighborhood' because the assignment's drop list removes it before variable selection, likely due to its 25+ levels creating too many dummy variables and potential overfitting concerns.*
+
+
+# Based on this, I will analyze the high priority categorical variables (ExterQual, KitchenQual, BsmtQual, HeatingQC)
+```{r}
+# High priority categorical variables
+priority_cats <- c("ExterQual", "KitchenQual", "BsmtQual", "HeatingQC")
+
+# Summary statistics by categorical variable levels
+cat_summary <- data.frame()
+for(var in priority_cats) {
+  stats <- ames_data_clean %>%
+    group_by(!!sym(var)) %>%
+    summarise(N = n(), Mean = mean(SalePrice), Median = median(SalePrice), 
+              SD = sd(SalePrice)) %>%
+    arrange(desc(Mean))
+  
+  mean_diff <- max(stats$Mean) - min(stats$Mean)
+  cat_summary <- rbind(cat_summary, data.frame(Variable = var, MeanDiff = mean_diff))
+  
+  cat("\n", var, ":\n")
+  print((kable(stats)))
+}
+
+# Rank by mean difference
+cat_summary <- cat_summary %>% arrange(desc(MeanDiff))
+cat("\n\nVariables Ranked by Mean Difference:\n")
+kable(cat_summary)
+
+cat("\n\nWhy mean difference matters: Large mean differences indicate strong predictive power - the variable clearly separates high-priced from low-priced homes, making it valuable for the model.\n")
+
+```
+
+## Deciding which categorical variables to convert to dummy and retain for modeling
+```{r}
+# Fit regression models to calculate R-squared for each categorical variable
+rsq_results <- data.frame()
+for(var in priority_cats) {
+  model <- lm(SalePrice ~ get(var), data = ames_data_clean)
+  rsq <- summary(model)$r.squared
+  num_levels <- length(unique(ames_data_clean[[var]]))
+  rsq_results <- rbind(rsq_results, data.frame(
+    Variable = var, 
+    R_squared = rsq, 
+    NumLevels = num_levels,
+    DummiesNeeded = num_levels - 1
+  ))
+}
+
+rsq_results <- rsq_results %>% arrange(desc(R_squared))
+kable(rsq_results)
+
+# Select variables with R² > 0.25 (explain more than 25% of price variation)
+selected_cats <- rsq_results$Variable[rsq_results$R_squared > 0.25]
+cat("\nSelected variables (R² > 0.25):", paste(selected_cats, collapse = ", "), "\n")
+
+# Create dummy variables
+total_dummies <- 0
+for(var in selected_cats) {
+  # Use model.matrix with intercept to get all-but-one dummies automatically
+  # Reference level (first alphabetically) is excluded - this is the controlled choice
+  dummies <- model.matrix(~ factor(ames_data_clean[[var]]))[, -1]
+  # Name columns: strip the "factor(ames_data_clean[[var]])" prefix
+  colnames(dummies) <- paste0(var, "_", levels(factor(ames_data_clean[[var]]))[-1])
+  ames_data_clean <- cbind(ames_data_clean, dummies)
+  total_dummies <- total_dummies + ncol(dummies)
+}
+
+cat("Total dummy variables created:", total_dummies, "\n")
+
+```
+
+# Predictive Modeling
+```{r}
+# Set the seed on the random number generator so you get the same split every time that you run the code.
+set.seed(123)
+ames_data_clean$u <- runif(n = dim(ames_data_clean)[1], min=0, max=1);
+
+# Define these two variables for later use;
+ames_data_clean$QualityIndex <- ames_data_clean$OverallQual * ames_data_clean$OverallCond;
+ames_data_clean$TotalSqftCalc <- ames_data_clean$BsmtFinSF1 + ames_data_clean$BsmtFinSF2 + ames_data_clean$GrLivArea;
+
+# Create train/test split;
+train.df <- subset(ames_data_clean, u < 0.70);
+test.df  <- subset(ames_data_clean, u >= 0.70);
+
+# Check your data split. The sum of the parts should equal the whole.
+# Do your totals add up?
+cat("The original dataset has", dim(ames_data_clean)[1], " records.")
+dim(train.df)[1]
+dim(test.df)[1]
+cat("The data has ", (dim(train.df)[1]), "training records and ", (dim(test.df)[1]), "test records")
+
+```
+
+```{r}
+# Train/Test partition table
+kable(data.frame(
+  Dataset = c("Training", "Test", "Total"),
+  Observations = c(nrow(train.df), nrow(test.df), nrow(ames_data_clean)),
+  Percentage = paste0(round(c(nrow(train.df), nrow(test.df), nrow(ames_data_clean)) / nrow(ames_data_clean) * 100, 1), "%")
+))
+
+```
+
+```{r}
+# Drop unnecessary columns
+drop.list <- c('SID','PID','LotConfig','Neighborhood','HouseStyle','YearBuilt','YearRemodel',
+'Exterior1','BsmtFinSF1','BsmtFinSF2','CentralAir','YrSold','MoSold','SaleCondition','u','train','I2010','BsmtFullBath','BsmtHalfBath','FullBath','HalfBath',
+	'FireplaceInd1','FireplaceInd2','OverallQual','OverallCond','PoolArea','GrLivArea');
+
+train.clean <- train.df[,!(names(train.df) %in% c(drop.list, priority_cats))]
+test.clean <- test.df[,!(names(test.df) %in% c(drop.list, priority_cats))]
+
+```
+
+```{r}
+# Keep only numeric columns
+train.clean <- train.clean %>% select(where(is.numeric))
+test.clean <- test.clean %>% select(where(is.numeric))
+
+head(train.clean)
+cat("Number of predictor variables in pool:", ncol(train.clean) - 1, "\n")
+```
+
+```{r}
+library(kableExtra)
+
+# Define the upper model as the FULL model
+upper.lm <- lm(SalePrice ~ ., data = train.clean);
+summary(upper.lm)
+
+# Define the lower model as the Intercept model
+lower.lm <- lm(SalePrice ~ 1, data=train.clean);
+
+# Need a SLR to initialize stepwise selection
+sqft.lm <- lm(SalePrice ~ TotalSqftCalc, data=train.clean);
+summary(sqft.lm)
+
+```
+
+```{r}
+# Note: There is only one function for classical model selection in R - stepAIC();
+# stepAIC() is part of the MASS library.
+# The MASS library comes with the BASE R distribution, but you still need to load it;
+
+# Call stepAIC() for variable selection
+forward.lm <- stepAIC(object=lower.lm,scope=list(upper=formula(upper.lm),lower=~1),
+direction=c('forward'));
+summary(forward.lm)
+
+backward.lm <- stepAIC(object=upper.lm,direction=c('backward'));
+summary(backward.lm)
+
+stepwise.lm <- stepAIC(object=sqft.lm,scope=list(upper=formula(upper.lm),lower=~1),
+direction=c('both'));
+summary(stepwise.lm)
+
+```
+
+```{r}
+junk.lm <- lm(SalePrice ~ OverallQual + OverallCond + QualityIndex + GrLivArea + TotalSqftCalc, data=train.df)
+summary(junk.lm)
+
+```
+
+```{r}
+# Load required libraries
+# ========================================
+# UPPER MODEL (Full Model)
+# ========================================
+cat("
+
+## UPPER MODEL (Full Model with All 36 Predictors)
+
+")
+
+# Coefficient table
+cat("
+### Coefficient Table:
+
+")
+kable(summary(upper.lm)$coefficients,
+      digits = 4,
+      caption = "Coefficients for Upper Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# ANOVA table
+cat("
+### ANOVA Table:
+
+")
+kable(anova(upper.lm),
+      digits = 4,
+      caption = "ANOVA for Upper Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Model summary
+cat("
+### Model Summary:
+")
+cat("Number of Predictors:", length(coef(upper.lm)) - 1, "
+")
+cat("Adjusted R-squared:", round(summary(upper.lm)$adj.r.squared, 4), "
+")
+cat("AIC:", round(AIC(upper.lm), 2), "
+")
+cat("BIC:", round(BIC(upper.lm), 2), "
+
+")
+
+
+# ========================================
+# SLR MODEL (Simple Linear Regression)
+# ========================================
+cat("
+
+## SLR MODEL (SalePrice ~ TotalSqftCalc)
+
+")
+
+# Coefficient table
+cat("
+### Coefficient Table:
+
+")
+kable(summary(sqft.lm)$coefficients,
+      digits = 4,
+      caption = "Coefficients for SLR Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# ANOVA table
+cat("
+### ANOVA Table:
+
+")
+kable(anova(sqft.lm),
+      digits = 4,
+      caption = "ANOVA for SLR Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Model summary
+cat("
+### Model Summary:
+")
+cat("Number of Predictors:", length(coef(sqft.lm)) - 1, "
+")
+cat("Adjusted R-squared:", round(summary(sqft.lm)$adj.r.squared, 4), "
+")
+cat("AIC:", round(AIC(sqft.lm), 2), "
+")
+cat("BIC:", round(BIC(sqft.lm), 2), "
+
+")
+
+
+# ========================================
+# FORWARD SELECTION MODEL
+# ========================================
+cat("
+
+## FORWARD SELECTION MODEL
+
+")
+
+# Coefficient table
+cat("
+### Coefficient Table:
+
+")
+kable(summary(forward.lm)$coefficients,
+      digits = 4,
+      caption = "Coefficients for Forward Selection Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# ANOVA table
+cat("
+### ANOVA Table:
+
+")
+kable(anova(forward.lm),
+      digits = 4,
+      caption = "ANOVA for Forward Selection Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Model summary
+cat("
+### Model Summary:
+")
+cat("Number of Predictors:", length(coef(forward.lm)) - 1, "
+")
+cat("Adjusted R-squared:", round(summary(forward.lm)$adj.r.squared, 4), "
+")
+cat("AIC:", round(AIC(forward.lm), 2), "
+")
+cat("BIC:", round(BIC(forward.lm), 2), "
+
+")
+
+
+# ========================================
+# BACKWARD SELECTION MODEL
+# ========================================
+cat("
+
+## BACKWARD SELECTION MODEL
+
+")
+
+# Coefficient table
+cat("
+### Coefficient Table:
+
+")
+kable(summary(backward.lm)$coefficients,
+      digits = 4,
+      caption = "Coefficients for Backward Selection Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# ANOVA table
+cat("
+### ANOVA Table:
+
+")
+kable(anova(backward.lm),
+      digits = 4,
+      caption = "ANOVA for Backward Selection Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Model summary
+cat("
+### Model Summary:
+")
+cat("Number of Predictors:", length(coef(backward.lm)) - 1, "
+")
+cat("Adjusted R-squared:", round(summary(backward.lm)$adj.r.squared, 4), "
+")
+cat("AIC:", round(AIC(backward.lm), 2), "
+")
+cat("BIC:", round(BIC(backward.lm), 2), "
+
+")
+
+
+# ========================================
+# STEPWISE SELECTION MODEL
+# ========================================
+cat("
+
+## STEPWISE SELECTION MODEL
+
+")
+
+# Coefficient table
+cat("
+### Coefficient Table:
+
+")
+kable(summary(stepwise.lm)$coefficients,
+      digits = 4,
+      caption = "Coefficients for Stepwise Selection Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# ANOVA table
+cat("
+### ANOVA Table:
+
+")
+kable(anova(stepwise.lm),
+      digits = 4,
+      caption = "ANOVA for Stepwise Selection Model") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# Model summary
+cat("
+### Model Summary:
+")
+cat("Number of Predictors:", length(coef(stepwise.lm)) - 1, "
+")
+cat("Adjusted R-squared:", round(summary(stepwise.lm)$adj.r.squared, 4), "
+")
+cat("AIC:", round(AIC(stepwise.lm), 2), "
+")
+cat("BIC:", round(BIC(stepwise.lm), 2), "
+
+")
+
+
+```
+
+```{r}
+# Compute the VIF values
+kable(sort(vif(forward.lm),decreasing=TRUE))
+kable(sort(vif(backward.lm),decreasing=TRUE))
+kable(sort(vif(stepwise.lm),decreasing=TRUE))
+kable(sort(vif(junk.lm),decreasing=TRUE))
+
+```
+
+```{r}
+# Compare the three variable selection models
+cat("\n=== MODEL COMPARISON ===\n")
+cat("Forward Selection - Number of variables:", length(coef(forward.lm)) - 1, "\n")
+cat("Backward Selection - Number of variables:", length(coef(backward.lm)) - 1, "\n")
+cat("Stepwise Selection - Number of variables:", length(coef(stepwise.lm)) - 1, "\n")
+cat("Junk Model - Number of variables:", length(coef(junk.lm)) - 1, "\n\n")
+
+# Check if models are identical
+same_forward_backward <- setequal(names(coef(forward.lm)), names(coef(backward.lm)))
+same_forward_stepwise <- setequal(names(coef(forward.lm)), names(coef(stepwise.lm)))
+same_backward_stepwise <- setequal(names(coef(backward.lm)), names(coef(stepwise.lm)))
+
+cat("Are Forward and Backward the same?", same_forward_backward, "\n")
+cat("Are Forward and Stepwise the same?", same_forward_stepwise, "\n")
+cat("Are Backward and Stepwise the same?", same_backward_stepwise, "\n")
+
+```
+
+```{r}
+# Calculate in-sample fit metrics for all models
+calc_metrics <- function(model, data) {
+  n <- nrow(data)
+  k <- length(coef(model)) - 1
+  mse <- mean(model$residuals^2)
+  mae <- mean(abs(model$residuals))
+  mape <- mean(abs(model$residuals / data$SalePrice)) * 100
+  
+  return(c(
+    Adj_R2 = summary(model)$adj.r.squared,
+    AIC = AIC(model),
+    BIC = BIC(model),
+    MSE = mse,
+    MAE = mae,
+    MAPE = mape
+  ))
+}
+
+# Calculate for all models
+forward_metrics <- calc_metrics(forward.lm, train.clean)
+backward_metrics <- calc_metrics(backward.lm, train.clean)
+stepwise_metrics <- calc_metrics(stepwise.lm, train.clean)
+junk_metrics <- calc_metrics(junk.lm, train.df)
+
+# Combine into table
+metrics_table <- data.frame(
+  Forward = forward_metrics,
+  Backward = backward_metrics,
+  Stepwise = stepwise_metrics,
+  Junk = junk_metrics
+)
+
+# Calculate rankings (1 = best)
+rank_table <- metrics_table
+rank_table[1,] <- rank(-metrics_table[1,], ties.method = "first")  # Higher Adj R2 is better
+rank_table[2:6,] <- apply(metrics_table[2:6,], 1, rank, ties.method = "first")  # Lower is better
+
+cat("\n=== IN-SAMPLE MODEL COMPARISON ===\n")
+kable(metrics_table, digits = 2, caption = "Training Data Fit Metrics")
+cat("\n")
+kable(rank_table, caption = "Model Rankings (1 = Best)")
+
+```
+
+```{r}
+# Generate predictions on test data
+forward.test <- predict(forward.lm, newdata = test.clean)
+backward.test <- predict(backward.lm, newdata = test.clean)
+stepwise.test <- predict(stepwise.lm, newdata = test.clean)
+junk.test <- predict(junk.lm, newdata = test.df)
+
+# Calculate test MSE, MAE, and MAPE
+test_metrics <- data.frame(
+  Forward = c(
+    MSE = mean((test.clean$SalePrice - forward.test)^2),
+    MAE = mean(abs(test.clean$SalePrice - forward.test)),
+    MAPE = mean(abs((test.clean$SalePrice - forward.test) / test.clean$SalePrice)) * 100
+  ),
+  Backward = c(
+    MSE = mean((test.clean$SalePrice - backward.test)^2),
+    MAE = mean(abs(test.clean$SalePrice - backward.test)),
+    MAPE = mean(abs((test.clean$SalePrice - backward.test) / test.clean$SalePrice)) * 100
+  ),
+  Stepwise = c(
+    MSE = mean((test.clean$SalePrice - stepwise.test)^2),
+    MAE = mean(abs(test.clean$SalePrice - stepwise.test)),
+    MAPE = mean(abs((test.clean$SalePrice - stepwise.test) / test.clean$SalePrice)) * 100
+  ),
+  Junk = c(
+    MSE = mean((test.df$SalePrice - junk.test)^2),
+    MAE = mean(abs(test.df$SalePrice - junk.test)),
+    MAPE = mean(abs((test.df$SalePrice - junk.test) / test.df$SalePrice)) * 100
+  )
+)
+
+# Add rankings
+test_ranks <- apply(test_metrics, 1, rank)
+
+cat("\n=== OUT-OF-SAMPLE PREDICTIVE ACCURACY ===\n")
+kable(test_metrics, digits = 2, caption = "Test Data Performance")
+cat("\n")
+kable(t(test_ranks), caption = "Test Rankings (1 = Best)")
+
+# Compare train vs test MSE
+cat("\n\nTrain vs Test MSE:\n")
+comparison <- rbind(
+  Train = metrics_table["MAPE",],
+  Test = test_metrics["MAPE",],
+  Difference = test_metrics["MAPE",] - metrics_table["MAPE",]
+)
+kable(comparison, digits = 2)
+
+```
+
+```{r}
+# Function to assign prediction grades
+assign_grade <- function(pct_error) {
+  ifelse(pct_error <= 0.10, 'Grade 1: [0,0.10]',
+         ifelse(pct_error <= 0.15, 'Grade 2: (0.10,0.15]',
+                ifelse(pct_error <= 0.25, 'Grade 3: (0.15,0.25]',
+                       'Grade 4: (0.25+]')))
+}
+
+# Training data prediction grades
+forward.trainPCT <- abs(forward.lm$residuals) / train.clean$SalePrice
+backward.trainPCT <- abs(backward.lm$residuals) / train.clean$SalePrice
+stepwise.trainPCT <- abs(stepwise.lm$residuals) / train.clean$SalePrice
+junk.trainPCT <- abs(junk.lm$residuals) / train.df$SalePrice
+
+# Test data prediction grades
+forward.testPCT <- abs(test.clean$SalePrice - forward.test) / test.clean$SalePrice
+backward.testPCT <- abs(test.clean$SalePrice - backward.test) / test.clean$SalePrice
+stepwise.testPCT <- abs(test.clean$SalePrice - stepwise.test) / test.clean$SalePrice
+junk.testPCT <- abs(test.df$SalePrice - junk.test) / test.df$SalePrice
+
+# Create grade distributions (cleaner format)
+train_grade_summary <- rbind(
+  Forward = prop.table(table(assign_grade(forward.trainPCT))),
+  Backward = prop.table(table(assign_grade(backward.trainPCT))),
+  Stepwise = prop.table(table(assign_grade(stepwise.trainPCT))),
+  Junk = prop.table(table(assign_grade(junk.trainPCT)))
+)
+
+test_grade_summary <- rbind(
+  Forward = prop.table(table(assign_grade(forward.testPCT))),
+  Backward = prop.table(table(assign_grade(backward.testPCT))),
+  Stepwise = prop.table(table(assign_grade(stepwise.testPCT))),
+  Junk = prop.table(table(assign_grade(junk.testPCT)))
+)
+
+cat("\n=== OPERATIONAL VALIDATION ===\n")
+cat("\nTraining Data Prediction Grades:\n")
+kable(train_grade_summary, digits = 3)
+
+cat("\n\nTest Data Prediction Grades:\n")
+kable(test_grade_summary, digits = 3)
+
+# Underwriting quality check (>50% Grade 1)
+cat("\n\nUnderwriting Quality (Grade 1 %):\n")
+underwriting <- rbind(
+  Train = train_grade_summary[, 1],
+  Test = test_grade_summary[, 1]
+)
+kable(underwriting, digits = 3)
+
+cat("\n\nModels meeting underwriting quality (>0.50):\n")
+print(colnames(underwriting)[underwriting["Test",] > 0.50])
+
+```
+
+```{r}
+# Select best model based on test performance
+best_idx <- which.min(test_metrics["MSE",])
+best_name <- names(best_idx)
+best.lm <- get(paste0(tolower(best_name), ".lm"))
+
+cat("\n=== BEST MODEL SELECTION ===\n")
+cat("Best Model:", best_name, "\n")
+cat("Test MSE:", round(test_metrics["MSE", best_idx], 2), "\n")
+cat("Test MAPE:", round(test_metrics["MAPE", best_idx], 2), "%\n")
+cat("Grade 1 (Test):", round(test_grade_summary[best_name, 1], 3), "\n\n")
+
+# Display model summary
+cat("Model Variables:\n")
+print(names(coef(best.lm)))
+cat("\n\nModel Summary:\n")
+print(summary(best.lm))
+
+```
+
+```{r}
+cat("\n=== COEFFICIENT SIGN VERIFICATION ===\n\n")
+
+# Extract coefficients (excluding intercept)
+coef_df <- data.frame(
+  Variable = names(coef(best.lm))[-1],
+  Coefficient = coef(best.lm)[-1]
+) %>%
+  mutate(Direction = ifelse(Coefficient > 0, "Positive", "Negative"))
+
+# Reference category for all quality dummies is Excellent (Ex)
+# So all other levels should be negative (discount vs Excellent)
+expected_signs <- c(
+  TotalSqftCalc  = "Positive",  # More space = higher price
+  BsmtUnfSF      = "Positive",  # More unfinished basement still adds space
+  QualityIndex   = "Positive",  # Higher quality/condition = higher price
+  LotArea        = "Positive",  # Larger lot = higher price
+  MasVnrArea     = "Positive",  # Masonry veneer adds curb appeal
+  Fireplaces     = "Positive",  # Amenity adds value
+  GarageCars     = "Positive",  # More garage capacity = higher price
+  GarageArea     = "Positive",  # Larger garage = higher price
+  SecondFlrSF    = "Positive",  # More living space = higher price
+  WoodDeckSF     = "Positive",  # Outdoor amenity adds value
+  ScreenPorch    = "Positive",  # Outdoor amenity adds value
+  LotFrontage    = "Positive",  # More street frontage = higher price
+  # Quality dummies — all negative vs Excellent reference
+  BsmtQual_Gd   = "Negative",  # Good < Excellent
+  BsmtQual_TA   = "Negative",  # Typical < Excellent
+  BsmtQual_Fa   = "Negative",  # Fair < Excellent
+  BsmtQual_Po   = "Negative",  # Poor < Excellent
+  BsmtQual_None = "Negative",  # No basement < Excellent
+  ExterQual_Gd  = "Negative",  # Good < Excellent
+  ExterQual_TA  = "Negative",  # Typical < Excellent
+  ExterQual_Fa  = "Negative",  # Fair < Excellent
+  KitchenQual_Gd = "Negative", # Good < Excellent
+  KitchenQual_TA = "Negative", # Typical < Excellent
+  KitchenQual_Fa = "Negative", # Fair < Excellent
+  KitchenQual_Po = "Negative", # Poor < Excellent
+  # Ambiguous — theory doesn't give a clear single direction
+  BedroomAbvGr  = "Ambiguous", # More bedrooms can reduce price per room
+  KitchenAbvGr  = "Negative",  # Multiple kitchens signals conversion/unusual
+  EnclosedPorch = "Negative",  # Less desirable than open porch
+  GarageYrBlt   = "Ambiguous", # Newer = better but collinear with house age
+  LowQualFinSF  = "Negative",  # Low quality finish drags price down
+  ThreeSsnPorch = "Ambiguous", # Niche feature, market dependent
+  SubClass      = "Ambiguous"  # Numeric code, direction not straightforward
+)
+
+# Join expected to actual
+coef_df <- coef_df %>%
+  mutate(
+    Expected = expected_signs[Variable],
+    Flag = case_when(
+      Expected == "Ambiguous" ~ "Review",
+      Direction == Expected   ~ "OK",
+      TRUE                    ~ "WARNING"
+    )
+  )
+
+kable(coef_df, digits = 2, row.names = FALSE,
+      caption = "Coefficient Sign Verification")
+
+# Summary
+n_warn <- sum(coef_df$Flag == "WARNING")
+n_ok   <- sum(coef_df$Flag == "OK")
+n_rev  <- sum(coef_df$Flag == "Review")
+
+cat("\nSummary:\n")
+cat("• Signs as expected:", n_ok, "variables\n")
+cat("• Flagged for review (ambiguous theory):", n_rev, "variables\n")
+cat("• Unexpected signs:", n_warn, "variables\n")
+
+if(n_warn > 0) {
+  cat("\nVariables with unexpected signs:\n")
+  print(coef_df %>% filter(Flag == "WARNING") %>% 
+        select(Variable, Coefficient, Expected))
+}
+```
+
+```{r}
+# Residual diagnostics for best model
+cat("\n=== RESIDUAL DIAGNOSTICS ===\n\n")
+
+# Diagnostic plots
+par(mfrow = c(2, 2))
+plot(best.lm)
+par(mfrow = c(1, 1))
+
+# Shapiro-Wilk test (sample 5000 for large datasets)
+if(length(best.lm$residuals) > 5000) {
+  shapiro_result <- shapiro.test(sample(best.lm$residuals, 5000))
+} else {
+  shapiro_result <- shapiro.test(best.lm$residuals)
+}
+
+cat("\nShapiro-Wilk Normality Test:\n")
+cat("W =", round(shapiro_result$statistic, 4), ", p-value =", 
+    format.pval(shapiro_result$p.value, digits = 3), "\n")
+
+# Breusch-Pagan test for heteroscedasticity
+library(lmtest)
+bp_result <- bptest(best.lm)
+cat("\nBreusch-Pagan Heteroscedasticity Test:\n")
+cat("BP =", round(bp_result$statistic, 4), ", p-value =", 
+    format.pval(bp_result$p.value, digits = 3), "\n")
+
+# Cook's Distance for influential observations
+cooks_d <- cooks.distance(best.lm)
+influential <- which(cooks_d > 0.5)
+cat("\nInfluential Observations (Cook's D > 0.5):", 
+    ifelse(length(influential) > 0, length(influential), "None"), "\n")
+
+```
+
+```{r}
+cat("\n=== HETEROSCEDASTICITY ASSESSMENT ===\n\n")
+
+cat("The Breusch-Pagan test confirms significant heteroscedasticity",
+    "(BP =", round(bp_result$statistic, 2), 
+    ", p =", format.pval(bp_result$p.value, digits = 3), ").\n\n")
+
+cat("Implications:\n")
+cat("• OLS coefficient estimates remain unbiased but are no longer efficient\n")
+cat("• Standard errors are unreliable, making hypothesis tests and p-values invalid\n")
+cat("• Prediction intervals will be miscalibrated (too narrow for high-value homes)\n\n")
+
+cat("Why transformation is deferred:\n")
+cat("• A log(SalePrice) model would require all predictions and metrics to be\n")
+cat("  back-transformed via exp(), complicating MAPE and grade calculations\n")
+cat("• The assignment's operational validation framework (MAPE, prediction grades)\n")
+cat("  is defined on raw SalePrice scale — back-transformation introduces\n")
+cat("  its own bias via Jensen's inequality\n")
+cat("• The Residuals vs Fitted plot shows the heteroscedasticity is concentrated\n")
+cat("  in the upper tail (high-value homes), which is a known feature of housing\n")
+cat("  data rather than a modelling error\n")
+cat("• Predictive accuracy on the test set (MAPE =", 
+    round(test_metrics["MAPE", best_name], 2), "%, Grade 1 =",
+    round(test_grade_summary[best_name, 1] * 100, 1), 
+    "%) meets the GSE underwriting quality standard despite heteroscedasticity\n\n")
+
+cat("Recommended next steps (out of scope for this assignment):\n")
+cat("• Refit using log(SalePrice) as response and compare BP statistic\n")
+cat("• Alternatively, apply weighted least squares (WLS) with weights\n")
+cat("  proportional to 1/fitted values\n")
+```
+
+```{r}
+# R-squared change analysis
+cat("\n=== R-SQUARED CHANGE ANALYSIS ===\n")
+full_r2 <- summary(best.lm)$r.squared
+vars <- names(coef(best.lm))[-1]
+
+rsq_change <- sapply(vars, function(v) {
+  formula_str <- paste("SalePrice ~", paste(setdiff(vars, v), collapse = " + "))
+  reduced <- lm(as.formula(formula_str), data = train.clean)
+  full_r2 - summary(reduced)$r.squared
+})
+
+rsq_df <- data.frame(
+  Variable = names(rsq_change),
+  R2_Change = rsq_change,
+  Pct_Change = (rsq_change / full_r2) * 100
+) %>% arrange(R2_Change)
+
+cat("\nVariables ranked by R² contribution:\n")
+kable(rsq_df, digits = 4, row.names = FALSE)
+
+# Identify weak contributors
+weak_vars <- rsq_df$Variable[rsq_df$R2_Change < 0.001]
+cat("\n\nWeak contributors (R² change < 0.001):\n")
+print(weak_vars)
+
+
+```
+
+```{r}
+# Get remaining variables
+strong_vars <- setdiff(names(coef(best.lm))[-1], weak_vars)
+
+# Build trimmed model formula
+trimmed_formula <- as.formula(paste("SalePrice ~", paste(strong_vars, collapse = " + ")))
+
+# Fit trimmed model
+trimmed.lm <- lm(trimmed_formula, data = train.clean)
+
+summary(trimmed.lm)
+```
+
+```{r}
+# Compare full vs trimmed model
+trimmed.test <- predict(trimmed.lm, newdata = test.clean)
+
+comparison_table <- data.frame(
+  Metric = c("Predictors", "Adj R²", "AIC", "BIC", "Train MAPE (%)", "Test MAPE (%)","Grade 1 Test (%)"),
+  Full = c(
+    length(coef(best.lm)) - 1,
+    round(summary(best.lm)$adj.r.squared, 4),
+    round(AIC(best.lm), 2),
+    round(BIC(best.lm), 2),
+    round(metrics_table["MAPE", best_name], 2),
+    round(test_metrics["MAPE", best_name], 2),
+    round(test_grade_summary[best_name, 1] * 100, 1)
+  ),
+  Trimmed = c(
+    length(coef(trimmed.lm)) - 1,
+    round(summary(trimmed.lm)$adj.r.squared, 4),
+    round(AIC(trimmed.lm), 2),
+    round(BIC(trimmed.lm), 2),
+    round(mean(abs(trimmed.lm$residuals / train.clean$SalePrice)) * 100, 2),
+    round(mean(abs((test.clean$SalePrice - trimmed.test) / test.clean$SalePrice)) * 100, 2),
+    round(mean(assign_grade(abs(test.clean$SalePrice - trimmed.test) / test.clean$SalePrice) == "Grade 1: [0,0.10]") * 100, 1)
+  )
+)
+
+kable(comparison_table, col.names = c("Metric", "Full (27 vars)", "Trimmed (17 vars)"),
+      caption = "Full vs. Trimmed Model Comparison")
+
+```
+
+```{r}
+cat("\n=== COLLINEARITY ASSESSMENT ===\n\n")
+
+# Extract VIFs for the best model
+vif_vals <- sort(vif(best.lm), decreasing = TRUE)
+high_vif <- vif_vals[vif_vals > 4]
+
+cat("Variables with VIF > 4:\n")
+print(round(high_vif, 3))
+
+cat("\nCorrelation between GarageCars and GarageArea:\n")
+garage_cor <- cor(train.clean$GarageCars, train.clean$GarageArea)
+cat("r =", round(garage_cor, 3), "\n\n")
+
+cat("Assessment:\n")
+cat("• GarageCars (VIF =", round(vif_vals["GarageCars"], 2), 
+    ") and GarageArea (VIF =", round(vif_vals["GarageArea"], 2), 
+    ") are correlated (r =", round(garage_cor, 3), ")\n")
+cat("• Both VIFs are below the conventional threshold of 10\n")
+cat("• Both variables are retained: GarageCars captures capacity (discrete)\n")
+cat("  while GarageArea captures physical size (continuous) — they measure\n")
+cat("  related but distinct aspects of garage value\n")
+cat("• R² contribution: GarageCars =", 
+    round(rsq_df$Pct_Change[rsq_df$Variable == "GarageCars"], 3), 
+    "%, GarageArea =",
+    round(rsq_df$Pct_Change[rsq_df$Variable == "GarageArea"], 3), "%\n")
+cat("• If parsimony is prioritised, GarageArea is the weaker contributor\n")
+cat("  and would be the candidate for removal\n")
+
+```
+
+```{r}
+cat("\nNote on quality dummy VIFs:\n")
+cat("• High VIFs for dummy variables from the same categorical variable are expected\n")
+cat("  and not a concern — e.g. ExterQual_TA (VIF =", round(vif_vals["ExterQual_TA"], 2), 
+    "), ExterQual_Gd (VIF =", round(vif_vals["ExterQual_Gd"], 2), ")\n")
+cat("• Dummies from the same variable are structurally correlated by construction\n")
+cat("• This is distinct from collinearity between independent predictors\n")
+cat("  such as GarageCars and GarageArea, which warrants genuine concern\n")
+
+```
+
+```{r}
+cat("\n=== FINAL MODEL SUMMARY ===\n\n")
+
+cat("Selected Model:", best_name, "\n")
+cat("Number of Predictors:", length(coef(best.lm)) - 1, "\n\n")
+
+cat("Performance Metrics:\n")
+final_summary <- data.frame(
+  Metric = c("Adj R²", "AIC", "BIC", "Train MAPE (%)", "Test MAPE (%)", 
+             "Test MSE", "Grade 1 Train (%)", "Grade 1 Test (%)", "Underwriting Quality"),
+  Full = c(
+    round(summary(best.lm)$adj.r.squared, 4),
+    round(AIC(best.lm), 2),
+    round(BIC(best.lm), 2),
+    round(metrics_table["MAPE", best_name], 2),
+    round(test_metrics["MAPE", best_name], 2),
+    round(test_metrics["MSE", best_name], 2),
+    round(underwriting["Train", best_name] * 100, 1),
+    round(underwriting["Test", best_name] * 100, 1),
+    ifelse(underwriting["Test", best_name] > 0.50, "YES", "NO")
+  ),
+  Trimmed = c(
+    round(summary(trimmed.lm)$adj.r.squared, 4),
+    round(AIC(trimmed.lm), 2),
+    round(BIC(trimmed.lm), 2),
+    round(mean(abs(trimmed.lm$residuals / train.clean$SalePrice)) * 100, 2),
+    round(mean(abs((test.clean$SalePrice - trimmed.test) / test.clean$SalePrice)) * 100, 2),
+    round(mean((test.clean$SalePrice - trimmed.test)^2), 2),
+    round(mean(assign_grade(abs(trimmed.lm$residuals) / train.clean$SalePrice) == "Grade 1: [0,0.10]") * 100, 1),
+    round(mean(assign_grade(abs(test.clean$SalePrice - trimmed.test) / test.clean$SalePrice) == "Grade 1: [0,0.10]") * 100, 1),
+    ifelse(mean(assign_grade(abs(test.clean$SalePrice - trimmed.test) / test.clean$SalePrice) == "Grade 1: [0,0.10]") > 0.50, "YES", "NO")
+  )
+)
+kable(final_summary, col.names = c("Metric", "Full (27 vars)", "Trimmed (17 vars)"), row.names = FALSE)
+
+cat("\n\nKey Findings:\n")
+cat("• TotalSqftCalc is the strongest predictor (6.21% R² contribution)\n")
+cat("• Both models meet GSE underwriting quality standard (>50% Grade 1)\n")
+cat("• Full model preferred: trimmed model loses 0.0086 Adj R², 4.9pp Grade 1, at cost of only 10 predictors\n")
+cat("• Heteroscedasticity detected - consider log transformation for improvement\n")
+cat("• Model generalizes well (test MAPE only 0.13% higher than training)\n")
+
+```
